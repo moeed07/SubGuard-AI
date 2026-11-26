@@ -193,12 +193,17 @@ function renderDashboard(data) {
              <button class="btn btn-small btn-primary" onclick="scheduleReminder('${sub.subscription_key}', 'one_minute')">Test reminder (1 min)</button>
            </div>`
         : "";
-    const hasUnknownCyclePayment =
-      (!due || !due.date) &&
+    const hasUnknownDate = !due || !due.date;
+    const canEstimateCycle =
+      hasUnknownDate &&
       timeline.some((e) => e.kind === "payment" && e.cycle === null && e.amount_minor !== null);
-    const lookupHtml = hasUnknownCyclePayment
+    const estimateButtonsHtml = canEstimateCycle
+      ? `<button class="btn btn-small btn-secondary" onclick="selectCycleEstimate('${sub.subscription_key}', 'monthly')">Monthly</button>
+         <button class="btn btn-small btn-secondary" onclick="selectCycleEstimate('${sub.subscription_key}', 'annual')">Annual</button>`
+      : "";
+    const lookupHtml = hasUnknownDate
       ? `<div class="lookup-box" style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
-           <div class="small muted">Billing period unknown. You can look up public terms or choose a cycle to estimate:</div>
+           <div class="small muted">Billing period/date unknown. Look up public terms${canEstimateCycle ? " or choose a cycle to estimate" : ""}:</div>
            <div class="cta-row" style="margin-top:6px;">
              <input type="text" id="lp-product-${sub.subscription_key}" value="${sub.subscription_key.replace(/-/g, " ")}" placeholder="Product" class="btn btn-small" style="font-weight:400;" />
              <input type="text" id="lp-plan-${sub.subscription_key}" value="Standard" placeholder="Plan" class="btn btn-small" style="font-weight:400;" />
@@ -209,8 +214,7 @@ function renderDashboard(data) {
              </select>
              <input type="text" id="lp-market-${sub.subscription_key}" value="PK" maxlength="2" style="width:48px;" class="btn btn-small" />
              <button class="btn btn-small btn-secondary" onclick="lookupPlan('${sub.subscription_key}')">Look up billing period</button>
-             <button class="btn btn-small btn-secondary" onclick="selectCycleEstimate('${sub.subscription_key}', 'monthly')">Monthly</button>
-             <button class="btn btn-small btn-secondary" onclick="selectCycleEstimate('${sub.subscription_key}', 'annual')">Annual</button>
+             ${estimateButtonsHtml}
            </div>
            <div id="lp-result-${sub.subscription_key}" class="small" style="margin-top:6px;"></div>
            <div id="est-result-${sub.subscription_key}" class="small" style="margin-top:4px;"></div>
