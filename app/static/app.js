@@ -149,17 +149,43 @@ function renderDashboard(data) {
   const subsList = document.getElementById("subscriptions-list");
   subsList.innerHTML = "";
   const portfolio = data.portfolio || {};
+  const evidenceMap = new Map();
+  for (const ev of data.evidence || []) {
+    evidenceMap.set(ev.source_id, ev);
+  }
   const dueMap = new Map();
   for (const d of portfolio.due || []) {
     dueMap.set(d.subscription_key, d);
   }
   for (const sub of portfolio.subscriptions || []) {
     const due = dueMap.get(sub.subscription_key);
+    const timeline = (portfolio.timelines && portfolio.timelines[sub.subscription_key]) || [];
+    const lastPayment = [...timeline].reverse().find(
+      (e) => e.kind === "payment" && e.event_date && (e.cycle === "monthly" || e.cycle === "annual")
+    );
+    let estimatedHtml = "";
+    if (!due && lastPayment) {
+      const paidDate = new Date(lastPayment.event_date + "T00:00:00Z");
+      if (lastPayment.cycle === "annual") {
+        paidDate.setUTCFullYear(paidDate.getUTCFullYear() + 1);
+      } else {
+        paidDate.setUTCMonth(paidDate.getUTCMonth() + 1);
+      }
+      const estDate = paidDate.toISOString().slice(0, 10);
+      estimatedHtml = `<div class="small">Estimated next charge: <strong>${formatMoney(lastPayment.currency, lastPayment.amount_minor)}</strong> around <strong>${estDate}</strong> (from payment on ${lastPayment.event_date}) <span class="badge badge-warn">estimated</span></div>`;
+    }
+    const sourcesHtml = (sub.evidence_ids || [])
+      .map((sid) => {
+        const ev = evidenceMap.get(sid);
+        const label = ev ? `${ev.sender_domain} — ${ev.subject}` : sid;
+        return `<a href="/api/evidence/${encodeURIComponent(sid)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      })
+      .join("<br/>");
     const row = document.createElement("div");
     row.className = "item-row";
     const dueHtml = due
-      ? `<div class="small">Next charge: <strong>${formatMoney(due.currency, due.amount_minor)}</strong> on <strong>${due.date}</strong> <span class="badge">${due.date_basis}</span></div>`
-      : `<div class="small muted">No upcoming charge scheduled</div>`;
+      ? `<div class="small">Next charge: <strong>${formatMoney(due.currency, due.amount_minor)}</strong> on <strong>${due.date || "Date unknown"}</strong> <span class="badge">${due.date_basis}</span></div>`
+      : estimatedHtml || `<div class="small muted">No upcoming charge scheduled</div>`;
     const remindHtml =
       due && due.date_basis === "confirmed"
         ? `<div class="cta-row">
@@ -174,6 +200,7 @@ function renderDashboard(data) {
       </div>
       <div class="small muted">Auto-renew: ${sub.auto_renew === null ? "Unknown" : sub.auto_renew} · Paid through: ${sub.paid_through || "—"}</div>
       ${dueHtml}
+      <div class="small muted" style="margin-top:4px;">Source: ${sourcesHtml || "—"}</div>
       ${remindHtml}
     `;
     subsList.appendChild(row);
