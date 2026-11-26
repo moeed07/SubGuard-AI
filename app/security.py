@@ -95,22 +95,40 @@ class SecurityManager:
         return hmac.compare_digest(token, expected)
 
     def create_oauth_state(self, session_id: str) -> str:
-        now = time.time()
-        expired = [k for k, (_, exp) in self._oauth_states.items() if exp < now]
+        now = int(time.time())
+        expired = [k for k, exp in self._oauth_states.items() if exp < now]
         for k in expired:
             self._oauth_states.pop(k, None)
-        state = secrets.token_urlsafe(24)
-        self._oauth_states[state] = (session_id, now + self.STATE_TTL_SECONDS)
-        return state
+        payload = {
+            "sid": session_id,
+            "nonce": secrets.token_urlsafe(12),
+            "exp": now + self.STATE_TTL_SECONDS,
+        }
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        b64 = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+        return f"{b64}.{self._sign(b64)}"
 
     def consume_oauth_state(self, state: Optional[str], session_id: Optional[str]) -> bool:
-        if not state or not session_id:
+        if not state or not session_id or "." not in state:
             return False
-        entry = self._oauth_states.pop(state, None)
-        if not entry:
+        b64, sig = state.split(".", 1)
+        if not hmac.compare_digest(sig, self._sign(b64)):
             return False
-        bound_sid, exp = entry
-        return exp >= time.time() and hmac.compare_digest(bound_sid, session_id)
+        try:
+            padded = b64 + "=" * (-len(b64) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        except Exception:
+            return False
+        now = int(time.time())
+        if payload.get("exp", 0) < now:
+            return False
+        if not hmac.compare_digest(str(payload.get("sid", "")), session_id):
+            return False
+        nonce = str(payload.get("nonce", ""))
+        if not nonce or nonce in self._oauth_states:
+            return False
+        self._oauth_states[nonce] = payload["exp"]
+        return True
 
     def encrypt_token(self, plaintext: str) -> str:
         return self._fernet.encrypt(plaintext.encode("utf-8")).decode("ascii")
