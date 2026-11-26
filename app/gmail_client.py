@@ -21,7 +21,8 @@ GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 DEFAULT_GMAIL_QUERY = (
-    'newer_than:13m {receipt invoice renewal trial subscription payment cancellation "auto-renew"}'
+    'newer_than:13m -category:promotions -category:social '
+    '{receipt invoice renewal trial subscription payment cancellation "auto-renew"}'
 )
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
