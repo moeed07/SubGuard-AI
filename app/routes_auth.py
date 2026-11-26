@@ -63,6 +63,12 @@ async def auth_google_start(request: Request) -> Response:
     if not settings.oauth_configured:
         return RedirectResponse(url="/?auth_error=oauth_not_configured", status_code=302)
 
+    if request.url.hostname == "127.0.0.1" and "localhost" in settings.app_base_url:
+        return RedirectResponse(
+            url=f"{settings.app_base_url.rstrip('/')}/auth/google/start",
+            status_code=302,
+        )
+
     session_id, existing = _get_or_create_session_id(request, security)
     state = security.create_oauth_state(session_id)
     auth_url = build_google_auth_url(
