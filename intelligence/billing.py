@@ -94,7 +94,10 @@ def _due_entries(timeline, stop, plan, as_of):
 def _estimated_renewal(plan, timeline, pending, as_of):
     if not plan or any(row["kind"] == "renewal" and row["date"] for row in pending):
         return None
+    return _estimate_using_receipt(plan, timeline, plan["cycle"], as_of)
 
+
+def _estimate_using_receipt(plan, timeline, cycle, as_of):
     # A later copy of the same receipt must not shift the estimate.
     payment_key = _payment_key(plan)
     dated_copies = [
@@ -104,10 +107,34 @@ def _estimated_renewal(plan, timeline, pending, as_of):
     if not dated_copies:
         return None
     anchor = min(dated_copies, key=lambda event: (_received(event), event["event_id"]))
-    paid_on = date.fromisoformat(anchor["event_date"])
-    if paid_on.isoformat() > as_of:
+    estimate = _renewal_from_payment(plan, anchor["event_date"], cycle, as_of)
+    if estimate:
+        estimate["evidence_ids"] = _sources([plan, anchor])
+    return estimate
+
+
+def estimate_renewal_from_selection(portfolio, subscription_key, cycle):
+    """Return a display-only estimate after the user selects their billing cycle."""
+    subscription = next((row for row in portfolio["subscriptions"] if row["subscription_key"] == subscription_key), None)
+    if not subscription or subscription["auto_renew"] is False or any(
+        row["subscription_key"] == subscription_key and row["date"] for row in portfolio["due"]
+    ):
         return None
-    months = 12 if plan["cycle"] == "annual" else 1
+    timeline = portfolio["timelines"][subscription_key]
+    payment = next((event for event in reversed(timeline) if event["kind"] == "payment"), None)
+    if not payment or payment["cycle"] is not None or payment["amount_minor"] is None or not payment["currency"]:
+        return None
+    estimate = _estimate_using_receipt(payment, timeline, cycle, portfolio["as_of"])
+    if estimate:
+        estimate["cycle_basis"] = "user_selected"
+    return estimate
+
+
+def _renewal_from_payment(payment, paid_on, cycle, as_of):
+    if cycle not in ("monthly", "annual") or not paid_on or paid_on > as_of:
+        return None
+    paid_on = date.fromisoformat(paid_on)
+    months = 12 if cycle == "annual" else 1
     year, month_index = divmod(paid_on.year * 12 + paid_on.month - 1 + months, 12)
     month = month_index + 1
     next_date = date(year, month, min(paid_on.day, monthrange(year, month)[1])).isoformat()
@@ -115,13 +142,13 @@ def _estimated_renewal(plan, timeline, pending, as_of):
         # A stale receipt alone does not establish that further cycles occurred.
         return None
     return {
-        "subscription_key": plan["subscription_key"],
+        "subscription_key": payment["subscription_key"],
         "date": next_date,
-        "amount_minor": plan["amount_minor"],
-        "currency": plan["currency"],
+        "amount_minor": payment["amount_minor"],
+        "currency": payment["currency"],
         "kind": "renewal",
         "date_basis": "estimated",
-        "evidence_ids": _sources([plan, anchor]),
+        "evidence_ids": [payment["source_id"]],
     }
 
 
