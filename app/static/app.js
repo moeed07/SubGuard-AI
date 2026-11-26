@@ -193,6 +193,29 @@ function renderDashboard(data) {
              <button class="btn btn-small btn-primary" onclick="scheduleReminder('${sub.subscription_key}', 'one_minute')">Test reminder (1 min)</button>
            </div>`
         : "";
+    const hasUnknownCyclePayment =
+      (!due || !due.date) &&
+      timeline.some((e) => e.kind === "payment" && e.cycle === null && e.amount_minor !== null);
+    const lookupHtml = hasUnknownCyclePayment
+      ? `<div class="lookup-box" style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
+           <div class="small muted">Billing period unknown. You can look up public terms or choose a cycle to estimate:</div>
+           <div class="cta-row" style="margin-top:6px;">
+             <input type="text" id="lp-product-${sub.subscription_key}" value="${sub.subscription_key.replace(/-/g, " ")}" placeholder="Product" class="btn btn-small" style="font-weight:400;" />
+             <input type="text" id="lp-plan-${sub.subscription_key}" value="Standard" placeholder="Plan" class="btn btn-small" style="font-weight:400;" />
+             <select id="lp-store-${sub.subscription_key}" class="btn btn-small">
+               <option value="google-play">Google Play</option>
+               <option value="app-store">App Store</option>
+               <option value="provider">Provider</option>
+             </select>
+             <input type="text" id="lp-market-${sub.subscription_key}" value="PK" maxlength="2" style="width:48px;" class="btn btn-small" />
+             <button class="btn btn-small btn-secondary" onclick="lookupPlan('${sub.subscription_key}')">Look up billing period</button>
+             <button class="btn btn-small btn-secondary" onclick="selectCycleEstimate('${sub.subscription_key}', 'monthly')">Monthly</button>
+             <button class="btn btn-small btn-secondary" onclick="selectCycleEstimate('${sub.subscription_key}', 'annual')">Annual</button>
+           </div>
+           <div id="lp-result-${sub.subscription_key}" class="small" style="margin-top:6px;"></div>
+           <div id="est-result-${sub.subscription_key}" class="small" style="margin-top:4px;"></div>
+         </div>`
+      : "";
     row.innerHTML = `
       <div class="item-head">
         <strong>${sub.subscription_key}</strong>
@@ -202,6 +225,7 @@ function renderDashboard(data) {
       ${dueHtml}
       <div class="small muted" style="margin-top:4px;">Source: ${sourcesHtml || "—"}</div>
       ${remindHtml}
+      ${lookupHtml}
     `;
     subsList.appendChild(row);
   }
@@ -227,6 +251,56 @@ async function loadDashboard() {
     renderDashboard(data);
   } catch (err) {
     showAlert(err.message);
+  }
+}
+
+async function lookupPlan(subscriptionKey) {
+  const out = document.getElementById(`lp-result-${subscriptionKey}`);
+  out.textContent = "Looking up public plan terms...";
+  try {
+    const res = await apiFetch("/api/plan-lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subscription_key: subscriptionKey,
+        product: document.getElementById(`lp-product-${subscriptionKey}`).value,
+        plan: document.getElementById(`lp-plan-${subscriptionKey}`).value,
+        storefront: document.getElementById(`lp-store-${subscriptionKey}`).value,
+        market: document.getElementById(`lp-market-${subscriptionKey}`).value,
+      }),
+    });
+    if (res.status !== "complete") {
+      out.textContent = `Public lookup ${res.status}.`;
+      return;
+    }
+    const textParts = (res.content || []).map((b) => b.text || "").filter(Boolean).join(" ");
+    const citations = [];
+    for (const b of res.content || []) {
+      for (const ann of b.annotations || []) {
+        if (ann.type === "url_citation" && ann.url) {
+          citations.push(`<a href="${ann.url}" target="_blank" rel="noopener noreferrer">${ann.title || ann.url}</a>`);
+        }
+      }
+    }
+    const suggestions = (res.search_suggestions || []).join(" ");
+    out.innerHTML = `<div>${textParts}</div>${citations.length ? `<div>Sources: ${citations.join(" · ")}</div>` : ""}${suggestions ? `<div class="muted">${suggestions}</div>` : ""}`;
+  } catch (err) {
+    out.textContent = err.message;
+  }
+}
+
+async function selectCycleEstimate(subscriptionKey, cycle) {
+  const out = document.getElementById(`est-result-${subscriptionKey}`);
+  try {
+    const res = await apiFetch("/api/plan-cycle-estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription_key: subscriptionKey, cycle }),
+    });
+    const e = res.estimate;
+    out.innerHTML = `Estimated next charge (${cycle}): <strong>${formatMoney(e.currency, e.amount_minor)}</strong> on <strong>${e.date}</strong> <span class="badge badge-warn">${e.date_basis}</span>`;
+  } catch (err) {
+    out.textContent = err.message;
   }
 }
 

@@ -351,3 +351,74 @@ def test_demo_fixture_reminders_worker_and_isolation() -> None:
     del_resp = client.delete("/api/data", headers={"X-CSRF-Token": csrf})
     assert del_resp.status_code == 200
     assert client.get("/api/dashboard").json()["connected"] is False
+
+
+def test_plan_lookup_and_cycle_estimate_endpoints() -> None:
+    store = LocalStore(":memory:")
+    app = create_app(settings=_test_settings(), store=store, intelligence=_mock_intelligence())
+    client = TestClient(app)
+
+    acct = "acct_lookup_test"
+    store.upsert_account(acct, is_demo=True)
+    portfolio = {
+        "as_of": "2026-11-26",
+        "timezone": "Asia/Karachi",
+        "totals": {"PKR": {"paid_minor": 200000, "monthly_equivalent_minor": 0, "next_7d_minor": 0}},
+        "subscriptions": [
+            {
+                "subscription_key": "google-play-order",
+                "status": "unknown",
+                "paid_through": None,
+                "auto_renew": None,
+                "evidence_ids": ["m1"],
+            }
+        ],
+        "due": [],
+        "timelines": {
+            "google-play-order": [
+                {
+                    "event_id": "m1:0",
+                    "source_id": "m1",
+                    "received_at": "2026-11-26T08:00:00Z",
+                    "subscription_key": "google-play-order",
+                    "kind": "payment",
+                    "currency": "PKR",
+                    "amount_minor": 200000,
+                    "cycle": None,
+                    "transaction_ref": None,
+                    "event_date": "2026-11-26",
+                    "effective_date": None,
+                    "next_charge_date": None,
+                    "date_basis": "unknown",
+                }
+            ]
+        },
+    }
+    ver = store.next_scan_version(acct)
+    store.save_portfolio(acct, ver, portfolio)
+
+    # Set session cookie
+    token = app.state.security.create_session_token("sid1", account_id=acct, is_demo=True)
+    csrf = app.state.security.create_csrf_token("sid1")
+    client.cookies.set(app.state.security.SESSION_COOKIE_NAME, token)
+
+    # Plan lookup returns disabled when SUBGUARD_PUBLIC_PLAN_LOOKUP is not enabled
+    lp = client.post(
+        "/api/plan-lookup",
+        headers={"X-CSRF-Token": csrf},
+        json={"subscription_key": "google-play-order", "product": "Google Play", "plan": "Standard", "storefront": "google-play", "market": "PK"},
+    )
+    assert lp.status_code == 200
+    assert lp.json()["status"] == "disabled"
+
+    # Choose monthly -> returns estimated date 1 calendar month later, leaves totals/reminders untouched
+    est = client.post(
+        "/api/plan-cycle-estimate",
+        headers={"X-CSRF-Token": csrf},
+        json={"subscription_key": "google-play-order", "cycle": "monthly"},
+    )
+    assert est.status_code == 200
+    assert est.json()["estimate"]["date"] == "2026-12-26"
+    assert est.json()["estimate"]["date_basis"] == "estimated"
+    assert store.get_portfolio(acct)["totals"]["PKR"]["next_7d_minor"] == 0
+    assert store.list_reminders(acct) == []

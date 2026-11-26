@@ -355,3 +355,47 @@ async def get_evidence_link(source_id: str, request: Request) -> Response:
             }
         )
     return RedirectResponse(url=f"https://mail.google.com/mail/u/0/#all/{msg_id}", status_code=302)
+
+
+@router.post("/api/plan-lookup")
+async def public_plan_lookup(request: Request, body: dict[str, Any] = Body(...)) -> Response:
+    _, err = _require_auth_and_csrf(request)
+    if err:
+        return err
+
+    from intelligence.api import lookup_public_plan  # type: ignore
+
+    result = await lookup_public_plan(
+        product=(body.get("product") or "").strip(),
+        plan=(body.get("plan") or "").strip(),
+        storefront=(body.get("storefront") or "provider").strip(),
+        market=(body.get("market") or "PK").strip(),
+    )
+    return JSONResponse(result)
+
+
+@router.post("/api/plan-cycle-estimate")
+async def plan_cycle_estimate(request: Request, body: dict[str, Any] = Body(...)) -> Response:
+    payload, err = _require_auth_and_csrf(request)
+    if err:
+        return err
+
+    store: LocalStore = request.app.state.store
+    portfolio = store.get_portfolio(payload["aid"])
+    if not portfolio:
+        return JSONResponse({"detail": "No active portfolio found"}, status_code=400)
+
+    sub_key = (body.get("subscription_key") or "").strip()
+    cycle = (body.get("cycle") or "").strip().lower()
+    if cycle not in ("monthly", "annual"):
+        return JSONResponse({"detail": "Cycle must be monthly or annual"}, status_code=400)
+
+    from intelligence.api import estimate_renewal_from_selection  # type: ignore
+
+    estimate = estimate_renewal_from_selection(portfolio, sub_key, cycle)
+    if not estimate:
+        return JSONResponse(
+            {"detail": "Cannot estimate renewal for this subscription (missing dated payment or cycle already known)."},
+            status_code=400,
+        )
+    return JSONResponse({"ok": True, "estimate": estimate})
