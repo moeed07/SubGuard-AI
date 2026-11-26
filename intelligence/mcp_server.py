@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import json
 from pathlib import Path
 
+from babel.numbers import get_currency_precision
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
@@ -16,19 +17,44 @@ def _response(payload):
     )
 
 
+def _display_amount(currency, minor):
+    if not currency or minor is None:
+        return None
+    precision = get_currency_precision(currency)
+    whole, fraction = divmod(abs(minor), 10**precision)
+    fraction_text = f".{fraction:0{precision}d}" if precision else ""
+    sign = "-" if minor < 0 else ""
+    return f"{currency} {sign}{whole:,}{fraction_text}"
+
+
+def _display_charge(row):
+    display = dict(row)
+    minor = display.pop("amount_minor")
+    display["amount"] = _display_amount(row["currency"], minor)
+    return display
+
+
 def create_server(portfolio):
     server = FastMCP("SubGuard billing evidence")
 
     @server.tool()
     def get_portfolio() -> CallToolResult:
-        """Read totals, subscription status, and upcoming charges for this review."""
+        """Read totals, subscription status, and upcoming charges. Amounts are ready to quote."""
         evidence = {
             source
             for row in portfolio["subscriptions"] + portfolio["due"]
             for source in row["evidence_ids"]
         }
         return _response({
-            **{key: portfolio[key] for key in ("as_of", "timezone", "totals", "subscriptions", "due")},
+            **{key: portfolio[key] for key in ("as_of", "timezone", "subscriptions")},
+            "totals": {
+                currency: {
+                    field.removesuffix("_minor"): _display_amount(currency, amount)
+                    for field, amount in totals.items()
+                }
+                for currency, totals in portfolio["totals"].items()
+            },
+            "due": [_display_charge(row) for row in portfolio["due"]],
             "evidence_ids": sorted(evidence),
         })
 
@@ -38,14 +64,18 @@ def create_server(portfolio):
         events = portfolio["timelines"].get(subscription_key)
         if events is None:
             return _response({"error": "Unknown subscription", "evidence_ids": []})
-        return _response({"events": events, "evidence_ids": sorted({event["source_id"] for event in events})})
+        return _response({
+            "events": [_display_charge(event) for event in events],
+            "evidence_ids": sorted({event["source_id"] for event in events}),
+        })
 
     @server.tool()
     def upsert_review_item(
         subscription_key: str, kind: str, target_date: str, state: str, evidence_ids: list[str]
     ) -> CallToolResult:
-        """Propose one open trial_conversion or renewal review for a confirmed charge due in seven days.
-        Cite the charge's source IDs. A proposal does not save or schedule anything.
+        """Propose a review for a confirmed charge due within seven days.
+        Copy subscription_key, kind, date (as target_date), and evidence_ids from one due row.
+        Pass state="open". A proposal does not save or schedule anything.
         """
         rejected = _response({"error": "Proposal does not match a confirmed upcoming charge", "evidence_ids": []})
         try:
