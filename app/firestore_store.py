@@ -27,6 +27,7 @@ class FirestoreStore:
         encrypted_token: Optional[str] = None,
         token_expires_at: int = 0,
         is_demo: Optional[bool] = None,
+        encrypted_email: Optional[str] = None,
     ) -> None:
         ref = self._acct_ref(account_id)
         data: dict[str, Any] = {"account_id": account_id}
@@ -34,6 +35,8 @@ class FirestoreStore:
             data["is_demo"] = int(is_demo)
         if encrypted_token is not None:
             data["encrypted_token"] = encrypted_token
+        if encrypted_email is not None:
+            data["encrypted_email"] = encrypted_email
         if token_expires_at > 0:
             data["token_expires_at"] = token_expires_at
         if not ref.get().exists:
@@ -239,7 +242,11 @@ class FirestoreStore:
             count += 1
         return count
 
-    def deliver_due_jobs(self, now_iso: Optional[str] = None) -> int:
+    def deliver_due_jobs(
+        self,
+        now_iso: Optional[str] = None,
+        on_deliver: Optional[Any] = None,
+    ) -> int:
         now = now_iso or _utc_now_iso()
         delivered = 0
         docs = self._db.collection("reminder_jobs").where("status", "==", "pending").stream()
@@ -251,8 +258,16 @@ class FirestoreStore:
             sub_key = job["subscription_key"]
             portfolio = self.get_portfolio(account_id)
             still_due = bool(
-                portfolio and any(d.get("subscription_key") == sub_key for d in portfolio.get("due", []))
+                portfolio and any(d.get("subscription_key") == sub_key and d.get("date") for d in portfolio.get("due", []))
             )
+            if not still_due and portfolio:
+                choices = self.list_cycle_choices(account_id)
+                sub_entry = next(
+                    (s for s in portfolio.get("subscriptions", []) if s.get("subscription_key") == sub_key),
+                    None,
+                )
+                if sub_key in choices and sub_entry and sub_entry.get("auto_renew") is not False:
+                    still_due = True
             notif_ref = self._acct_ref(account_id).collection("notifications").document(f"notif:{doc.id}")
 
             @firestore.transactional
@@ -270,7 +285,7 @@ class FirestoreStore:
                         "account_id": account_id,
                         "job_id": doc.id,
                         "subscription_key": sub_key,
-                        "message": f"Reminder: {sub_key} has a confirmed upcoming charge on {job.get('target_date')}.",
+                        "message": f"Reminder ({job.get('reminder_type')}): {sub_key} has an upcoming charge on {job.get('target_date')}.",
                         "created_at": now,
                     },
                 )
@@ -279,6 +294,11 @@ class FirestoreStore:
 
             if _deliver_txn(self._db.transaction()):
                 delivered += 1
+                if on_deliver is not None:
+                    try:
+                        on_deliver(job)
+                    except Exception:
+                        pass
         return delivered
 
     def list_notifications(self, account_id: str) -> list[dict[str, Any]]:

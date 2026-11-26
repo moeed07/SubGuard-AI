@@ -187,10 +187,17 @@ function renderDashboard(data) {
       dueHtml = `<div class="small muted">Next charge date unknown</div>`;
     }
 
+    const effectiveDate = (due && due.date) || (userChoice && userChoice.estimate && userChoice.estimate.date) || null;
+    const isCancelled = sub.auto_renew === false || sub.status === "canceled" || sub.status === "cancelled";
+    const subReminders = (data.reminders || []).filter((r) => r.subscription_key === key);
+    const remindersSummary = subReminders.length
+      ? `<div class="small muted" style="margin-top:4px;">Scheduled reminders (${data.smtp_configured ? "Gmail email + in-app" : "in-app; set SMTP_EMAIL & SMTP_APP_PASSWORD in .env for Gmail email"}): ${subReminders.map((r) => `${r.reminder_type} (${r.status}, ${formatKarachi(r.due_at)})`).join(" · ")}</div>`
+      : "";
     const remindHtml =
-      due && due.date_basis === "confirmed"
+      effectiveDate && !isCancelled
         ? `<div class="cta-row">
-             <button class="btn btn-small btn-secondary" onclick="scheduleReminder('${key}', 'default')">Remind me (day before 09:00)</button>
+             <button class="btn btn-small btn-secondary" onclick="scheduleReminder('${key}', 'five_days')">Remind 5d before</button>
+             <button class="btn btn-small btn-secondary" onclick="scheduleReminder('${key}', 'one_day')">Remind 1d before</button>
              <button class="btn btn-small btn-primary" onclick="scheduleReminder('${key}', 'one_minute')">Test reminder (1 min)</button>
            </div>`
         : "";
@@ -218,6 +225,7 @@ function renderDashboard(data) {
       <div class="small muted">Auto-renew: ${sub.auto_renew === null ? "Unknown" : sub.auto_renew} · Paid through: ${sub.paid_through || "—"}</div>
       ${dueHtml}
       <div class="small muted" style="margin-top:4px;">Source: ${sourcesHtml || "—"}</div>
+      ${remindersSummary}
       ${remindHtml}
       ${cycleHtml}
     `;
@@ -272,6 +280,14 @@ async function scheduleReminder(subscriptionKey, mode) {
     });
     showAlert(`Reminder saved for ${subscriptionKey} (${formatKarachi(res.job.due_at)}).`, true);
     await loadDashboard();
+    if (mode === "one_minute") {
+      setTimeout(async () => {
+        try {
+          await apiFetch("/api/reminders/deliver", { method: "POST" });
+          await loadDashboard();
+        } catch {}
+      }, 61000);
+    }
   } catch (err) {
     showAlert(err.message);
   }

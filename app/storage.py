@@ -34,6 +34,7 @@ class LocalStore:
                 CREATE TABLE IF NOT EXISTS accounts (
                     account_id TEXT PRIMARY KEY,
                     encrypted_token TEXT,
+                    encrypted_email TEXT,
                     token_expires_at INTEGER DEFAULT 0,
                     scan_version INTEGER DEFAULT 0,
                     last_successful_scan TEXT,
@@ -120,6 +121,11 @@ class LocalStore:
                 """
             )
             self._conn.commit()
+            try:
+                self._conn.execute("ALTER TABLE accounts ADD COLUMN encrypted_email TEXT")
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass
 
     def close(self) -> None:
         with self._lock:
@@ -133,6 +139,7 @@ class LocalStore:
         encrypted_token: Optional[str] = None,
         token_expires_at: int = 0,
         is_demo: Optional[bool] = None,
+        encrypted_email: Optional[str] = None,
     ) -> None:
         with self._lock:
             existing = self.get_account(account_id)
@@ -141,12 +148,14 @@ class LocalStore:
                     """
                     UPDATE accounts
                     SET encrypted_token = COALESCE(?, encrypted_token),
+                        encrypted_email = COALESCE(?, encrypted_email),
                         token_expires_at = CASE WHEN ? > 0 THEN ? ELSE token_expires_at END,
                         is_demo = COALESCE(?, is_demo)
                     WHERE account_id = ?
                     """,
                     (
                         encrypted_token,
+                        encrypted_email,
                         token_expires_at,
                         token_expires_at,
                         int(is_demo) if is_demo is not None else None,
@@ -156,10 +165,10 @@ class LocalStore:
             else:
                 self._conn.execute(
                     """
-                    INSERT INTO accounts (account_id, encrypted_token, token_expires_at, is_demo)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO accounts (account_id, encrypted_token, encrypted_email, token_expires_at, is_demo)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (account_id, encrypted_token, token_expires_at, int(bool(is_demo))),
+                    (account_id, encrypted_token, encrypted_email, token_expires_at, int(bool(is_demo))),
                 )
             self._conn.commit()
 
@@ -508,8 +517,12 @@ class LocalStore:
             self._conn.commit()
             return cur.rowcount
 
-    def deliver_due_jobs(self, now_iso: Optional[str] = None) -> int:
-        """Atomically deliver due pending jobs if the subscription still has an active/confirmed charge."""
+    def deliver_due_jobs(
+        self,
+        now_iso: Optional[str] = None,
+        on_deliver: Optional[ Any] = None,
+    ) -> int:
+        """Atomically deliver due pending jobs if the subscription still has an active/upcoming charge."""
         now = now_iso or utc_now_iso()
         delivered_count = 0
         with self._lock:
@@ -525,9 +538,17 @@ class LocalStore:
                 still_due = False
                 if portfolio:
                     for due_item in portfolio.get("due", []):
-                        if due_item.get("subscription_key") == sub_key:
+                        if due_item.get("subscription_key") == sub_key and due_item.get("date"):
                             still_due = True
                             break
+                    if not still_due:
+                        choices = self.list_cycle_choices(account_id)
+                        sub_entry = next(
+                            (s for s in portfolio.get("subscriptions", []) if s.get("subscription_key") == sub_key),
+                            None,
+                        )
+                        if sub_key in choices and sub_entry and sub_entry.get("auto_renew") is not False:
+                            still_due = True
                 if not still_due:
                     self._conn.execute(
                         "UPDATE reminder_jobs SET status = 'cancelled' WHERE job_id = ?",
@@ -536,7 +557,7 @@ class LocalStore:
                     continue
 
                 notif_id = f"notif:{job_id}"
-                msg = f"Reminder: {sub_key} has a confirmed upcoming charge on {row['target_date']}."
+                msg = f"Reminder ({row['reminder_type']}): {sub_key} has an upcoming charge on {row['target_date']}."
                 self._conn.execute(
                     """
                     INSERT OR IGNORE INTO notifications (
@@ -550,6 +571,11 @@ class LocalStore:
                     (job_id,),
                 )
                 delivered_count += 1
+                if on_deliver is not None:
+                    try:
+                        on_deliver(dict(row))
+                    except Exception:
+                        pass
             self._conn.commit()
         return delivered_count
 

@@ -19,6 +19,7 @@ async def deliver_jobs(request: Request) -> Response:
         if os.getenv("ALLOW_LOCAL_WORKER_BYPASS", "").lower() != "true":
             return JSONResponse({"detail": "Unauthorized worker call"}, status_code=401)
 
-    store: LocalStore = request.app.state.store
-    delivered = store.deliver_due_jobs()
+    from app.routes_api import deliver_due_jobs_with_email
+
+    delivered = deliver_due_jobs_with_email(request.app)
     return JSONResponse({"ok": True, "delivered": delivered})

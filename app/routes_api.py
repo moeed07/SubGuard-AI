@@ -13,7 +13,12 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.config import Settings
 from app.gmail_client import ScanOutput, revoke_google_token, scan_gmail_messages
-from app.intelligence_adapter import IntelligenceUnavailableError, process_scan_output
+from app.intelligence_adapter import (
+    IntelligenceUnavailableError,
+    auto_schedule_5d_and_1d_reminders,
+    process_scan_output,
+)
+from app.mailer import send_reminder_email
 from app.routes_auth import _get_or_create_session_id, _set_session_cookie
 from app.security import SecurityManager
 from app.storage import LocalStore
@@ -111,6 +116,29 @@ def _require_auth_and_csrf(request: Request) -> tuple[Optional[dict[str, Any]], 
     return payload, None
 
 
+def deliver_due_jobs_with_email(app: Any, now_iso: Optional[str] = None) -> int:
+    """Deliver due reminder jobs and send Gmail reminder emails when SMTP is configured."""
+    store: LocalStore = app.state.store
+    settings: Settings = app.state.settings
+    security: SecurityManager = app.state.security
+
+    def _on_deliver(job: dict[str, Any]) -> None:
+        acct = store.get_account(job["account_id"])
+        if not acct or not acct.get("encrypted_email"):
+            return
+        to_email = security.decrypt_token(acct["encrypted_email"])
+        if to_email:
+            send_reminder_email(
+                settings=settings,
+                to_email=to_email,
+                subscription_key=job["subscription_key"],
+                target_date=job["target_date"],
+                reminder_type=job["reminder_type"],
+            )
+
+    return store.deliver_due_jobs(now_iso=now_iso, on_deliver=_on_deliver)
+
+
 @router.get("/api/dashboard")
 async def get_dashboard(request: Request) -> Response:
     settings: Settings = request.app.state.settings
@@ -126,6 +154,7 @@ async def get_dashboard(request: Request) -> Response:
             {
                 "connected": False,
                 "oauth_configured": settings.oauth_configured,
+                "smtp_configured": settings.smtp_configured,
                 "csrf_token": csrf_token,
             }
         )
@@ -133,6 +162,8 @@ async def get_dashboard(request: Request) -> Response:
         return resp
 
     acct = store.get_account(account_id)
+    if not acct.get("is_demo"):
+        deliver_due_jobs_with_email(request.app)
     portfolio = store.get_portfolio(account_id)
     review = store.get_review(account_id)
     reminders = store.list_reminders(account_id)
@@ -155,6 +186,7 @@ async def get_dashboard(request: Request) -> Response:
             "demo_date": DEMO_AS_OF if acct.get("is_demo") else None,
             "timezone": DEMO_TIMEZONE,
             "oauth_configured": settings.oauth_configured,
+            "smtp_configured": settings.smtp_configured,
             "csrf_token": csrf_token,
             "scan_status": acct.get("scan_status", "never"),
             "partial": bool(acct.get("partial")),
@@ -257,39 +289,54 @@ async def create_reminder(request: Request, body: dict[str, Any] = Body(...)) ->
     account_id = payload["aid"]
     sub_key = (body.get("subscription_key") or "").strip()
     mode = (body.get("mode") or "default").strip()
-    if mode not in ("default", "one_minute"):
+    if mode not in ("default", "one_day", "five_days", "one_minute"):
         return JSONResponse({"detail": "Invalid reminder mode"}, status_code=400)
 
     portfolio = store.get_portfolio(account_id)
     if not portfolio:
         return JSONResponse({"detail": "No active portfolio found"}, status_code=400)
 
-    confirmed_due = None
-    for item in portfolio.get("due", []):
-        if item.get("subscription_key") == sub_key and item.get("date_basis") == "confirmed":
-            confirmed_due = item
-            break
-
-    if not confirmed_due:
+    sub_entry = next(
+        (s for s in portfolio.get("subscriptions", []) if s.get("subscription_key") == sub_key),
+        None,
+    )
+    if not sub_entry or sub_entry.get("auto_renew") is False or sub_entry.get("status") in ("canceled", "cancelled"):
         return JSONResponse(
-            {"detail": "Reminders can only be scheduled for a confirmed upcoming charge."},
+            {"detail": "Reminders cannot be scheduled for a canceled or non-renewing subscription."},
             status_code=400,
         )
 
-    target_date = confirmed_due["date"]
+    due_target = None
+    for item in portfolio.get("due", []):
+        if item.get("subscription_key") == sub_key and item.get("date"):
+            due_target = item
+            break
+    if not due_target:
+        user_est = _user_cycle_estimates(store, account_id, portfolio).get(sub_key, {}).get("estimate")
+        if user_est and user_est.get("date"):
+            due_target = user_est
+
+    if not due_target:
+        return JSONResponse(
+            {"detail": "Reminders can only be scheduled for a subscription with an upcoming renewal date."},
+            status_code=400,
+        )
+
+    target_date = due_target["date"]
     now_utc = datetime.now(timezone.utc)
 
     if mode == "one_minute":
         due_at_utc = now_utc + timedelta(minutes=1)
     else:
+        days_before = 5 if mode == "five_days" else 1
         karachi_tz = ZoneInfo(DEMO_TIMEZONE)
         target_day = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=karachi_tz)
-        default_local = (target_day - timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+        default_local = (target_day - timedelta(days=days_before)).replace(hour=9, minute=0, second=0, microsecond=0)
         due_at_utc = default_local.astimezone(timezone.utc)
         if due_at_utc <= now_utc:
             return JSONResponse(
                 {
-                    "detail": "Default reminder time (day before at 09:00 Asia/Karachi) is already past. Review now or use the 1-minute test option.",
+                    "detail": f"Reminder time ({days_before} day(s) before at 09:00 Asia/Karachi) is already past. Review now or use the 1-minute test option.",
                     "already_past": True,
                 },
                 status_code=409,
@@ -413,4 +460,17 @@ async def save_cycle_choice(request: Request, body: dict[str, Any] = Body(...)) 
 
     store.set_cycle_choice(account_id, sub_key, cycle)
     entry = _user_cycle_estimates(store, account_id, portfolio).get(sub_key, {"cycle": cycle, "estimate": None})
+    acct = store.get_account(account_id)
+    est = entry.get("estimate")
+    if acct and not acct.get("is_demo") and est and est.get("date"):
+        auto_schedule_5d_and_1d_reminders(store, account_id, sub_key, est["date"], DEMO_TIMEZONE)
     return JSONResponse({"ok": True, **entry})
+
+
+@router.post("/api/reminders/deliver")
+async def trigger_deliver_due_reminders(request: Request) -> Response:
+    _, err = _require_auth_and_csrf(request)
+    if err:
+        return err
+    delivered = deliver_due_jobs_with_email(request.app)
+    return JSONResponse({"ok": True, "delivered": delivered})

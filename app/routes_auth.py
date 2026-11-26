@@ -141,7 +141,14 @@ async def auth_google_callback(
 
     account_id = security.hash_account_id(email)
     encrypted_token = security.encrypt_token(access_token)
-    store.upsert_account(account_id, encrypted_token=encrypted_token, token_expires_at=expires_at, is_demo=False)
+    encrypted_email = security.encrypt_token(email)
+    store.upsert_account(
+        account_id,
+        encrypted_token=encrypted_token,
+        token_expires_at=expires_at,
+        is_demo=False,
+        encrypted_email=encrypted_email,
+    )
 
     # Run first scan automatically on successful callback
     scan_out = await scan_gmail_messages(

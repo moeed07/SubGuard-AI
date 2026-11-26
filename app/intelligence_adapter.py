@@ -3,10 +3,43 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
+from zoneinfo import ZoneInfo
 
 from app.gmail_client import ScanOutput
 from app.storage import LocalStore
+
+
+def auto_schedule_5d_and_1d_reminders(
+    store: LocalStore,
+    account_id: str,
+    subscription_key: str,
+    target_date: Optional[str],
+    timezone_name: str = "Asia/Karachi",
+) -> None:
+    """Automatically schedule 5-day before and 1-day before reminders when in the future."""
+    if not target_date:
+        return
+    try:
+        tz = ZoneInfo(timezone_name)
+        target_day = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=tz)
+    except Exception:
+        return
+    now_utc = datetime.now(timezone.utc)
+    for days_before, rtype in ((5, "five_days"), (1, "one_day")):
+        local_dt = (target_day - timedelta(days=days_before)).replace(
+            hour=9, minute=0, second=0, microsecond=0
+        )
+        due_utc = local_dt.astimezone(timezone.utc)
+        if due_utc > now_utc:
+            store.create_reminder_job(
+                account_id=account_id,
+                subscription_key=subscription_key,
+                reminder_type=rtype,
+                due_at=due_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                target_date=target_date,
+            )
 
 
 class IntelligenceUnavailableError(RuntimeError):
@@ -83,6 +116,13 @@ async def process_scan_output(
         skey = sub.get("subscription_key")
         if skey and (sub.get("auto_renew") is False or sub.get("status") in ("canceled", "cancelled")) and skey not in due_keys:
             store.cancel_reminders_for_subscription(account_id, skey)
+
+    # Automatically schedule 5-day and 1-day reminders for upcoming renewals/charges
+    for due_item in portfolio.get("due", []):
+        skey = due_item.get("subscription_key")
+        tdate = due_item.get("date")
+        if skey and tdate:
+            auto_schedule_5d_and_1d_reminders(store, account_id, skey, tdate, timezone_name)
 
     if not all_events:
         store.update_scan_status(account_id, scan_version, "zero_results", partial=scan_output.partial)

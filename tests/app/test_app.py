@@ -446,3 +446,68 @@ def test_user_cycle_choice_is_saved_and_estimated() -> None:
         json={"subscription_key": "google-play-order", "cycle": "clear"},
     )
     assert client.get("/api/dashboard").json()["user_estimates"] == {}
+
+
+def test_auto_5d_1d_reminders_and_email_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent_emails: list[dict[str, str]] = []
+
+    def _fake_smtp_send(settings, to_email, subscription_key, target_date, reminder_type):
+        sent_emails.append({
+            "to": to_email,
+            "sub": subscription_key,
+            "date": target_date,
+            "type": reminder_type,
+        })
+        return True
+
+    import app.routes_api as routes_api
+    monkeypatch.setattr(routes_api, "send_reminder_email", _fake_smtp_send)
+
+    store = LocalStore(":memory:")
+    app = create_app(settings=_test_settings(), store=store, intelligence=_mock_intelligence())
+    client = TestClient(app)
+
+    acct = "acct_live_email_test"
+    enc_email = app.state.security.encrypt_token("student@example.com")
+    store.upsert_account(acct, is_demo=False, encrypted_email=enc_email)
+    future_date = (datetime.now(timezone.utc) + timedelta(days=10)).strftime("%Y-%m-%d")
+    portfolio = {
+        "as_of": "2026-11-26",
+        "timezone": "Asia/Karachi",
+        "totals": {"PKR": {"paid_minor": 200000, "monthly_equivalent_minor": 200000, "next_7d_minor": 0}},
+        "subscriptions": [
+            {
+                "subscription_key": "writing-plus",
+                "status": "active",
+                "paid_through": future_date,
+                "auto_renew": True,
+                "evidence_ids": ["m1"],
+            }
+        ],
+        "due": [
+            {
+                "subscription_key": "writing-plus",
+                "date": future_date,
+                "amount_minor": 200000,
+                "currency": "PKR",
+                "kind": "renewal",
+                "date_basis": "confirmed",
+                "evidence_ids": ["m1"],
+            }
+        ],
+        "timelines": {"writing-plus": []},
+    }
+    ver = store.next_scan_version(acct)
+    store.save_portfolio(acct, ver, portfolio)
+
+    from app.intelligence_adapter import auto_schedule_5d_and_1d_reminders
+    auto_schedule_5d_and_1d_reminders(store, acct, "writing-plus", future_date)
+    reminders = store.list_reminders(acct)
+    assert {r["reminder_type"] for r in reminders} == {"five_days", "one_day"}
+
+    # Deliver when due time arrives -> sends email to student@example.com
+    far_future = (datetime.now(timezone.utc) + timedelta(days=11)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    delivered = routes_api.deliver_due_jobs_with_email(app, now_iso=far_future)
+    assert delivered == 2
+    assert len(sent_emails) == 2
+    assert sent_emails[0]["to"] == "student@example.com"

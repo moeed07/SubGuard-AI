@@ -22,8 +22,16 @@ class Settings:
     service_mode: str
     gemini_model: str
     google_api_key: str
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_email: str = ""
+    smtp_app_password: str = ""
     gmail_max_pages: int = 3
     gmail_max_messages: int = 40
+
+    @property
+    def smtp_configured(self) -> bool:
+        return bool(self.smtp_email and self.smtp_app_password)
 
     @property
     def is_production(self) -> bool:
@@ -50,4 +58,8 @@ def get_settings() -> Settings:
         service_mode=os.getenv("SERVICE_MODE", "web").strip().lower() or "web",
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip(),
         google_api_key=os.getenv("GOOGLE_API_KEY", "").strip(),
+        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com").strip() or "smtp.gmail.com",
+        smtp_port=int(os.getenv("SMTP_PORT", "587").strip() or "587"),
+        smtp_email=os.getenv("SMTP_EMAIL", "").strip(),
+        smtp_app_password=os.getenv("SMTP_APP_PASSWORD", "").strip(),
     )
