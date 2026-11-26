@@ -37,7 +37,10 @@ async def main():
     if result["status"] != "complete":
         return 1
     if choice == "cost":
-        return int(tools != {"get_portfolio"} or bool(result["items"]))
+        return int(
+            tools != {"get_portfolio"} or bool(result["items"])
+            or "PKR 3,000.00" not in result["summary"]
+        )
     if choice == "conflict":
         return int(not any(
             call["tool"] == "get_subscription_events" and "m8" in call["evidence_ids"]

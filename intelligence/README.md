@@ -11,7 +11,7 @@ py -3.11 -m venv .venv
 
 The fixture suite never calls Google. It covers arithmetic and extraction with the shared fictional mail, runs a real MCP child through stdio, and runs that child through ADK using a scripted model.
 
-For the live smoke test, privately set `GOOGLE_API_KEY` for the approved Gemini project. Set `GEMINI_MODEL` to the team's chosen tool-capable model, or use the default `gemini-flash-latest`. Each command sends only fictional evidence. It prints the model, elapsed time, result and tool trace, and exits unsuccessfully if the expected behavior was not observed.
+For the live smoke test, privately set `GOOGLE_API_KEY` for the approved Gemini project. The default `gemini-3.5-flash-lite` passed the live conflict test. Set `GEMINI_MODEL` to override it with another supported model. Each command sends only fictional evidence. It prints the model, elapsed time, result and tool trace, and exits unsuccessfully if the expected behavior was not observed.
 
 ```powershell
 .\.venv\Scripts\python.exe -m intelligence.smoke --goal conflict

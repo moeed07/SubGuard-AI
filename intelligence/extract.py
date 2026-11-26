@@ -24,8 +24,12 @@ PLAN_PREFIX = re.compile(
     r"subscription update|cancellation confirmation)\s*[:–-]\s*|your\s+)", re.I,
 )
 PLAN_END = re.compile(
-    r"\s+(?:monthly|annual|yearly|subscription|payment|receipt|renewal|auto[- ]renew(?:al)?|"
+    r"\s+(?:upcoming\s+)?(?:monthly|annual|yearly|subscription|payment|receipt|renewal|auto[- ]renew(?:al)?|"
     r"converts?|has converted|will|was|has been|is|paid|on)\b|[,.:]", re.I,
+)
+PLAN_IN_BODY = re.compile(
+    r"\s+(?:(?:monthly|annual|yearly)\s+(?:subscription|renewal)|payment|auto[- ]renew(?:al)?|converts?)\b",
+    re.I,
 )
 
 
@@ -60,16 +64,18 @@ def _stated_date(text):
 
 
 def _subscription(message, body):
-    candidates = (message["subject"].strip(), body.splitlines()[0].strip())
-    for index, candidate in enumerate(candidates):
-        candidate = PLAN_PREFIX.sub("", candidate)
+    subject = PLAN_PREFIX.sub("", message["subject"].strip())
+    first_line = PLAN_PREFIX.sub("", body.splitlines()[0].strip())
+    # Receipts and renewal notices can put references or qualifiers in the
+    # subject. A recognizable plan phrase in the billing text is more stable.
+    candidates = (first_line, subject) if PLAN_IN_BODY.search(first_line) else (subject,)
+    for candidate in candidates:
         name = PLAN_END.split(candidate, maxsplit=1)[0].strip()
         if (
             name
             and len(name.split()) <= 7
             and re.fullmatch(r"[\w &+'-]+", name)
-            and not re.match(r"^(?:paid|charge|payment|receipt|failed|promo|renewal|cancellation|trial|notice|billing|we|you)\b", name, re.I)
-            and (index == 0 or PLAN_END.search(candidate) or len(name.split()) <= 3)
+            and not re.match(r"^(?:on|paid|charge|payment|receipt|failed|promo|renewal|cancellation|trial|notice|billing|we|you)\b", name, re.I)
         ):
             return re.sub(r"[^\w]+", "-", name.casefold()).strip("-")
     return "merchant-" + re.sub(r"[^a-z0-9]+", "-", message["sender_domain"].lower()).strip("-")
