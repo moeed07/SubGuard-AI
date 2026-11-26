@@ -229,6 +229,7 @@ async def refresh_scan(request: Request, body: Optional[dict[str, Any]] = Body(d
             account_id=account_id,
             max_pages=settings.gmail_max_pages,
             max_messages=settings.gmail_max_messages,
+            known_message_ids={e["gmail_message_id"] for e in store.list_evidence(account_id)},
         )
         as_of = datetime.now(ZoneInfo(DEMO_TIMEZONE)).strftime("%Y-%m-%d")
 

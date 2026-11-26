@@ -149,6 +149,7 @@ async def auth_google_callback(
         account_id=account_id,
         max_pages=settings.gmail_max_pages,
         max_messages=settings.gmail_max_messages,
+        known_message_ids={e["gmail_message_id"] for e in store.list_evidence(account_id)},
     )
     as_of = datetime.now(ZoneInfo("Asia/Karachi")).strftime("%Y-%m-%d")
     intel = getattr(request.app.state, "intelligence", None)

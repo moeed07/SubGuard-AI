@@ -179,9 +179,16 @@ async def scan_gmail_messages(
     max_pages: int = 5,
     max_messages: int = 100,
     query: str = DEFAULT_GMAIL_QUERY,
+    known_message_ids: Optional[set[str]] = None,
 ) -> ScanOutput:
-    """List and fetch candidate billing messages from Gmail, returning sanitized envelopes."""
+    """List candidate billing messages and fetch only ones not already saved for this account.
+
+    Already-processed messages keep their saved events, so each refresh only downloads
+    new mail. Because the cap counts only new messages, repeated refreshes also
+    backfill older mail that an earlier capped scan did not reach.
+    """
     headers = {"Authorization": f"Bearer {access_token}"}
+    known = known_message_ids or set()
     message_ids: list[str] = []
     partial = False
     page_token: Optional[str] = None
@@ -189,13 +196,15 @@ async def scan_gmail_messages(
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             for _ in range(max_pages):
-                params: dict[str, Any] = {"q": query, "maxResults": min(50, max_messages)}
+                params: dict[str, Any] = {"q": query, "maxResults": 50}
                 if page_token:
                     params["pageToken"] = page_token
                 resp = await client.get(f"{GMAIL_API_BASE}/messages", headers=headers, params=params)
                 resp.raise_for_status()
                 data = resp.json()
                 for item in data.get("messages", []):
+                    if item["id"] in known:
+                        continue
                     message_ids.append(item["id"])
                     if len(message_ids) >= max_messages:
                         partial = True
