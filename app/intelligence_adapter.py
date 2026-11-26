@@ -81,7 +81,7 @@ async def process_scan_output(
     due_keys = {d.get("subscription_key") for d in portfolio.get("due", [])}
     for sub in portfolio.get("subscriptions", []):
         skey = sub.get("subscription_key")
-        if skey and (sub.get("auto_renew") is False or sub.get("status") == "cancelled") and skey not in due_keys:
+        if skey and (sub.get("auto_renew") is False or sub.get("status") in ("canceled", "cancelled")) and skey not in due_keys:
             store.cancel_reminders_for_subscription(account_id, skey)
 
     if not all_events:

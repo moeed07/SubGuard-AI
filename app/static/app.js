@@ -140,7 +140,8 @@ function renderDashboard(data) {
   traceList.innerHTML = "";
   for (const tr of review.trace || []) {
     const li = document.createElement("li");
-    li.textContent = `${tr.tool || "tool"}: ${tr.outcome || "ok"} (sources: ${(tr.source_ids || []).join(", ")})`;
+    const ids = tr.evidence_ids || tr.source_ids || [];
+    li.textContent = `${tr.tool || "tool"}: ${tr.outcome || "ok"} (sources: ${ids.join(", ")})`;
     traceList.appendChild(li);
   }
 
