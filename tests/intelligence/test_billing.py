@@ -1,7 +1,11 @@
 from copy import deepcopy
+from datetime import date, timedelta
 
-from intelligence.api import build_portfolio, extract_events
+import pytest
+
+from intelligence.api import build_portfolio, estimate_renewal_from_selection, extract_events
 from intelligence.fictional import AS_OF, TIMEZONE, fictional_messages
+from intelligence.review_rules import reviewable_charges
 
 
 def portfolio(events):
@@ -129,3 +133,68 @@ def test_confirmed_renewal_supersedes_estimate_and_cancellation_removes_it():
         ("2026-12-27", "confirmed"),
     ]
     assert portfolio([receipt, stop])["due"] == []
+
+
+def _payment(source, paid_on, **changes):
+    receipt = extract_events(fictional_messages())[0]
+    return dict(receipt, event_id=f"{source}:0", source_id=source, transaction_ref=source,
+                cycle=None, event_date=paid_on, received_at=f"{paid_on}T08:00:00Z") | changes
+
+
+@pytest.mark.parametrize(("gap", "latest", "expected"), [
+    (30, "2026-10-30", "2026-11-30"),
+    (365, "2025-12-01", "2026-12-01"),
+    (24, "2026-10-30", None),
+    (25, "2026-10-30", "2026-11-30"),
+    (35, "2026-10-30", "2026-11-30"),
+    (36, "2026-10-30", None),
+    (349, "2025-12-01", None),
+    (350, "2025-12-01", "2026-12-01"),
+    (380, "2025-12-01", "2026-12-01"),
+    (381, "2025-12-01", None),
+])
+def test_payment_history_estimates_use_inclusive_gap_ranges(gap, latest, expected):
+    earlier = (date.fromisoformat(latest) - timedelta(days=gap)).isoformat()
+    result = portfolio([_payment("new", latest), _payment("old", earlier)])
+    if expected:
+        estimate, = result["due"]
+        assert (estimate["date"], estimate["date_basis"], estimate["cycle_basis"]) == (
+            expected, "estimated", "payment_history",
+        )
+        assert estimate["evidence_ids"] == ["new", "old"]
+    else:
+        assert result["due"] == []
+    assert result["totals"]["PKR"] == {
+        "paid_minor": 400000, "monthly_equivalent_minor": 0, "next_7d_minor": 0,
+    }
+    assert list(reviewable_charges(result)) == []
+
+
+def test_latest_distinct_payments_win_and_irregular_gap_stays_unknown():
+    first = _payment("first", "2026-07-30")
+    second = _payment("second", "2026-08-29")
+    third = _payment("third", "2026-10-30")
+    duplicate = _payment("duplicate", "2026-09-30", transaction_ref="second",
+                         received_at="2026-10-31T09:00:00Z")
+    assert portfolio([first, second, third, duplicate])["due"] == []
+
+
+def test_confirmed_due_and_cancellation_take_precedence_over_history():
+    recent = _payment("recent", "2026-10-30")
+    history = [_payment("earlier", "2026-09-30"), recent]
+    notice = dict(recent, event_id="confirmed:0", source_id="confirmed", kind="renewal",
+                  next_charge_date="2026-12-02", date_basis="confirmed")
+    after_notice = portfolio(history + [notice])
+    assert [(row["date"], row["date_basis"]) for row in after_notice["due"]] == [
+        ("2026-12-02", "confirmed"),
+    ]
+    stop = dict(notice, event_id="stop:0", source_id="stop", kind="cancellation_confirmed",
+                received_at="2026-11-01T08:00:00Z")
+    assert portfolio(history + [notice, stop])["due"] == []
+
+
+def test_saved_cycle_returns_estimated_date_without_amount_or_currency():
+    result = portfolio([_payment("recent", "2026-11-01", amount_minor=None, currency=None)])
+    estimate = estimate_renewal_from_selection(result, "writing-plus", "monthly")
+    assert (estimate["date"], estimate["amount_minor"], estimate["currency"]) == ("2026-12-01", None, None)
+    assert (estimate["date_basis"], estimate["cycle_basis"]) == ("estimated", "user_selected")
