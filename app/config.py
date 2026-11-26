@@ -48,6 +48,6 @@ def get_settings() -> Settings:
         session_secret=os.getenv("SESSION_SECRET", "").strip(),
         token_encryption_key=os.getenv("TOKEN_ENCRYPTION_KEY", "").strip(),
         service_mode=os.getenv("SERVICE_MODE", "web").strip().lower() or "web",
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip(),
         google_api_key=os.getenv("GOOGLE_API_KEY", "").strip(),
     )

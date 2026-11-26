@@ -22,7 +22,7 @@ gcloud run deploy subguard-web \
   --allow-unauthenticated \
   --min-instances 0 \
   --max-instances 2 \
-  --set-env-vars SERVICE_MODE=web,GOOGLE_CLOUD_PROJECT=PROJECT_ID,GEMINI_MODEL=gemini-2.5-flash
+  --set-env-vars SERVICE_MODE=web,GOOGLE_CLOUD_PROJECT=PROJECT_ID,GEMINI_MODEL=gemini-3.5-flash-lite
 ```
 After deployment, copy the `https://...` URL, set `APP_BASE_URL` on `subguard-web` to that URL, and register `https://YOUR_DEPLOYED_HOST/auth/google/callback` in **Google Auth Platform → Clients**.
 
