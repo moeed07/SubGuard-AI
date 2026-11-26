@@ -175,7 +175,8 @@ function renderDashboard(data) {
     let dueHtml;
     if (due && due.date) {
       const basisNote = due.cycle_basis === "payment_history" ? " (from payment history)" : "";
-      dueHtml = `<div class="small">Next charge: <strong>${formatMoney(due.currency, due.amount_minor)}</strong> on <strong>${due.date}</strong> <span class="badge ${due.date_basis === "confirmed" ? "badge-ok" : "badge-warn"}">${due.date_basis}${basisNote}</span></div>`;
+      const dueAmount = due.amount_minor === null || due.amount_minor === undefined ? "Amount unknown" : formatMoney(due.currency, due.amount_minor);
+      dueHtml = `<div class="small">Next charge: <strong>${dueAmount}</strong> on <strong>${due.date}</strong> <span class="badge ${due.date_basis === "confirmed" ? "badge-ok" : "badge-warn"}">${due.date_basis}${basisNote}</span></div>`;
     } else if (userChoice && userChoice.estimate && userChoice.estimate.date) {
       const e = userChoice.estimate;
       const amount = e.amount_minor === null || e.amount_minor === undefined ? "Amount unknown" : formatMoney(e.currency, e.amount_minor);
