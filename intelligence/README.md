@@ -24,3 +24,7 @@ Moeed can import `extract_events(messages)`, `build_portfolio(events, as_of, tim
 The application saves validated open proposals by the shared stable item key. Reconcile old renewal items against confirmed cancellation in the app, since the review receives no existing item history. An optional optimizer is outside this implementation.
 
 The extractor skips marketing-only messages and accepts ISO dates, English month names, and unambiguous slash dates. An undated payment uses its received date. For a recurring receipt without a dated renewal notice, the portfolio estimates one cycle ahead using calendar months or years. Estimated dates stay out of the confirmed forecast and cannot be used for review proposals.
+
+To enable Gemini-assisted extraction for the app, set `SUBGUARD_GEMINI_EXTRACTION=true` along with `GOOGLE_API_KEY` and `GEMINI_MODEL`. For a Python caller, use `extract_events(messages, gemini_fallback=True)` to opt in for one scan. The fallback sends a bounded batch of short billing excerpts from already detected, single-event notices with a missing cycle or amount. It fills only fields backed by evidence and leaves the deterministic result available when Gemini is unavailable. A one-off charge without a recurring-period clue still has an unknown cycle.
+
+Extraction keeps its synchronous interface. When the fallback is enabled, async app handlers should run it in a worker thread, for example with `await asyncio.to_thread(extract_events, messages)`. The Gemini request uses a 10-second HTTP timeout and no retries.
