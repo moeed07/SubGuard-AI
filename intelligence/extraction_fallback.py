@@ -15,6 +15,7 @@ LENGTHS = {
     "annual": re.compile(r"\b(?:(?:1|one)[ -]year|(?:12|twelve)[ -]months?)\b", re.I),
 }
 RECURRING = re.compile(r"\b(?:billing period|billed |auto[- ]renew\w*|recurring|subscription)\b", re.I)
+RECURRING_CHARGE = re.compile(r"\b(?:billed|charged|renews?)\s+(?:(?:once|automatically)\s+)?(?:every|each|per|monthly|annually|yearly)\b", re.I)
 TRIAL_OR_OFFER = re.compile(r"\b(?:free|trial|discount|promotion|offer|introductory)\b", re.I)
 PAID_TOTAL = re.compile(r"\b(?:amount (?:paid|charged)|total (?:paid|charged)|you (?:paid|were charged))\b|^\s*(?:grand total|order total|total(?!\s+(?:tax|discount|refund|credit)\b)|paid|charged)\b", re.I)
 FUTURE_AMOUNT = re.compile(r"\b(?:next (?:charge|payment|billing amount)|first charge|renewal (?:charge|amount|of)|will be (?:charged|billed))\b", re.I)
@@ -152,6 +153,10 @@ def fill_missing_fields(events, evidence, parse_money):
             cycles = set().union(*(_cycles(line, recurring) for line in lines))
             if len(cycles) == 1 and _cycles(cycle_line, recurring) == cycles:
                 event["cycle"] = cycles.pop()
+                # A period mentioned elsewhere in a receipt does not turn a
+                # purchase into a subscription. Require a billing statement.
+                if RECURRING_CHARGE.search(cycle_line):
+                    event.pop("subscription_basis", None)
         if event["amount_minor"] is None and amount_line in lines:
             charges = {charge for line in lines if (charge := _charge(line, event["kind"], parse_money))}
             charge = _charge(amount_line, event["kind"], parse_money)
