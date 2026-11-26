@@ -1,12 +1,13 @@
 """Private stdio tools. The only input file is selected by the backend."""
 import argparse
-from datetime import date, timedelta
 import json
 from pathlib import Path
 
 from babel.numbers import get_currency_precision
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
+
+from .review_rules import reviewable_charges
 
 
 def _response(payload):
@@ -36,6 +37,7 @@ def _display_charge(row):
 
 def create_server(portfolio):
     server = FastMCP("SubGuard billing evidence")
+    reviewable = list(reviewable_charges(portfolio))
 
     @server.tool()
     def get_portfolio() -> CallToolResult:
@@ -54,7 +56,7 @@ def create_server(portfolio):
                 }
                 for currency, totals in portfolio["totals"].items()
             },
-            "due": [_display_charge(row) for row in portfolio["due"]],
+            "due": [dict(_display_charge(row), can_propose_review=row in reviewable) for row in portfolio["due"]],
             "evidence_ids": sorted(evidence),
         })
 
@@ -74,32 +76,19 @@ def create_server(portfolio):
         subscription_key: str, kind: str, target_date: str, state: str, evidence_ids: list[str]
     ) -> CallToolResult:
         """Propose a review for a confirmed charge due within seven days.
-        Copy subscription_key, kind, date (as target_date), and evidence_ids from one due row.
+        Copy fields from one due row with can_propose_review=true. Pass its ISO date as target_date.
         Pass state="open". A proposal does not save or schedule anything.
         """
         rejected = _response({"error": "Proposal does not match a confirmed upcoming charge", "evidence_ids": []})
-        try:
-            target = date.fromisoformat(target_date)
-        except ValueError:
-            return rejected
-        start = date.fromisoformat(portfolio["as_of"])
-        if (
-            target.isoformat() != target_date
-            or not start <= target <= start + timedelta(days=7)
-            or subscription_key not in portfolio["timelines"]
-            or kind not in {"trial_conversion", "renewal"}
-            or state != "open"
-            or not evidence_ids
-        ):
+        if state != "open" or not evidence_ids:
             return rejected
         sources = set(evidence_ids)
         matching = any(
             row["subscription_key"] == subscription_key
             and row["kind"] == kind
             and row["date"] == target_date
-            and row["date_basis"] == "confirmed"
             and sources <= set(row["evidence_ids"])
-            for row in portfolio["due"]
+            for row in reviewable
         )
         if not matching:
             return rejected

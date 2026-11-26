@@ -47,6 +47,8 @@ def test_real_stdio_tool_discovery_and_account_isolation():
                             "next_7d": "PKR 700.00",
                         }
                         assert result.structuredContent["due"][0]["amount"] == "PKR 700.00"
+                        assert result.structuredContent["due"][0]["can_propose_review"] is True
+                        assert result.structuredContent["due"][1]["can_propose_review"] is False
                         assert "amount_minor" not in result.structuredContent["due"][0]
                         result = await session.call_tool("get_subscription_events", {"subscription_key": "design-pro"})
                         assert result.structuredContent["evidence_ids"] == ["m3", "m4", "m8"]
@@ -149,7 +151,7 @@ def test_error_from_tool_is_not_a_valid_proposal():
 
 
 def test_automatic_review_without_expected_proposal_is_partial(monkeypatch):
-    async def no_proposal(path, goal, model, key, trace, items):
+    async def no_proposal(path, goal, model, key, trace, items, reviewable):
         trace.append({"tool": "get_portfolio", "outcome": "ok", "evidence_ids": ["m5"]})
         return "A trial is due."
 
@@ -158,3 +160,34 @@ def test_automatic_review_without_expected_proposal_is_partial(monkeypatch):
     result = asyncio.run(run_review(snapshot()))
     assert result["status"] == "partial"
     assert result["items"] == []
+
+
+def test_adk_hides_proposals_for_estimates_and_blocks_invalid_dates(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "fixture-placeholder")
+    only_receipt = build_portfolio(extract_events(fictional_messages()[:1]), AS_OF, TIMEZONE)
+
+    async def generate(self, llm_request, stream=False):
+        responses = [part.function_response for content in llm_request.contents
+                     for part in content.parts or [] if part.function_response]
+        goal = llm_request.contents[0].parts[0].text
+        if goal == "Show estimated renewals":
+            assert "upsert_review_item" not in llm_request.tools_dict
+        if not responses:
+            part = types.Part.from_function_call(name="get_portfolio", args={})
+        elif goal != "Show estimated renewals" and len(responses) == 1:
+            assert "upsert_review_item" in llm_request.tools_dict
+            part = types.Part.from_function_call(name="upsert_review_item", args=proposal(target_date="Nov 29"))
+        else:
+            if goal != "Show estimated renewals":
+                assert responses[-1].response["proposal_skipped"]
+            part = types.Part.from_text(text="Review finished without a proposal.")
+        yield LlmResponse(content=types.Content(role="model", parts=[part]))
+
+    monkeypatch.setattr(google_llm.Gemini, "generate_content_async", generate)
+    for report in (
+        asyncio.run(run_review(only_receipt, "Show estimated renewals")),
+        asyncio.run(run_review(snapshot(), "Show the billing dates")),
+    ):
+        assert report["status"] == "complete", report
+        assert [call["tool"] for call in report["trace"]] == ["get_portfolio"]
+        assert report["items"] == []

@@ -7,7 +7,15 @@ from babel.numbers import get_currency_precision
 
 CURRENCIES = get_global("all_currencies")
 MONEY = re.compile(r"\b([A-Z]{3})\s+(\d+(?:,\d{3})*(?:\.\d+)?)(?!\d|[.,]\d)|(?<![\d.,-])(\d+(?:,\d{3})*(?:\.\d+)?)\s+([A-Z]{3})\b")
-ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+MONTH_NAMES = "January February March April May June July August September October November December".split()
+MONTH_NUMBER = {name[:3].lower(): number for number, name in enumerate(MONTH_NAMES, 1)}
+MONTH = "(?:" + "|".join(f"{name[:3]}(?:{name[3:]})?" if len(name) > 3 else name for name in MONTH_NAMES) + "|Sept)"
+DATE_PATTERN = re.compile(
+    rf"\b(?:(?P<iso>\d{{4}}-\d{{2}}-\d{{2}})|(?P<numeric>\d{{1,2}}/\d{{1,2}}/\d{{4}})"
+    rf"|(?P<month_first>{MONTH})\.?\s+(?P<day_after>\d{{1,2}})(?:st|nd|rd|th)?,?\s+(?P<year_after>\d{{4}})"
+    rf"|(?P<day_before>\d{{1,2}})(?:st|nd|rd|th)?\s+(?P<month_after>{MONTH})\.?,?\s+(?P<year_before>\d{{4}}))\b",
+    re.I,
+)
 REFERENCE = re.compile(r"\b(?:receipt|(?:transaction|payment|merchant)\s+(?:reference|ref|id)|ref)\s*[:#]?\s*([A-Z0-9]+(?:-[A-Z0-9]+)*)\b", re.I)
 CYCLE = re.compile(r"\b(monthly|annually?|yearly)\b", re.I)
 FAKE_INSTRUCTION = re.compile(r"\b(?:ignore (?:all|previous|your|the)|pretend|instead output|assistant:|system:|mark .{0,40} as paid)\b", re.I)
@@ -17,7 +25,10 @@ FAILED = re.compile(r"\b(?:failed|declined|unsuccessful|unpaid|not (?:yet )?(?:p
 PAYMENT = re.compile(r"\b(?:paid(?!\s+plan)|payment (?:was |has been )?(?:received|collected|confirmed|successful)|(?:successfully|already) charged|charged successfully|duplicate confirmation of .*?payment)\b", re.I)
 TRIAL = re.compile(r"\b(?:trial .{0,60}(?:convert|transition|become|ends?)|(?:first charge|trial conversion))", re.I)
 RENEWAL = re.compile(r"\b(?:renewal|renews? on|will (?:auto[- ])?renew|next charge|scheduled (?:charge|payment)|will be (?:charged|billed))\b", re.I)
-PROMO = re.compile(r"\b(?:promotional|special offer|discount|sale)\b", re.I)
+PROMO = re.compile(r"\b(?:promotional|special offer|discount(?:ed|s)?|sale|shop now|offer ends|limited[- ]time)\b", re.I)
+MARKETING_CTA = re.compile(r"\b(?:shop|upgrade|subscribe|buy|save|sign up|offer|if you)\b", re.I)
+CONDITIONAL_SIGNUP = re.compile(r"\b(?:if|when|once) you (?:subscribe|sign up|upgrade|buy|purchase)\b", re.I)
+SCHEDULED_RENEWAL = re.compile(r"\b(?:scheduled|will (?:renew|be charged|be billed)|renews? on|next charge)\b", re.I)
 
 PLAN_PREFIX = re.compile(
     r"^(?:duplicate confirmation of (?:the same )?|(?:payment received|receipt|renewal notice|payment update|"
@@ -55,11 +66,23 @@ def _money(text):
 
 def _stated_date(text):
     dates = set()
-    for match in ISO_DATE.findall(text):
-        try:
-            dates.add(date.fromisoformat(match).isoformat())
-        except ValueError:
-            continue
+    for match in DATE_PATTERN.finditer(text):
+        if match["iso"]:
+            parts = [tuple(map(int, match["iso"].split("-")))]
+        elif match["numeric"]:
+            first, second, year = map(int, match["numeric"].split("/"))
+            # When both orders are valid and differ, the message is ambiguous.
+            parts = [(year, second, first), (year, first, second)]
+        else:
+            month = MONTH_NUMBER[(match["month_first"] or match["month_after"])[:3].lower()]
+            day = int(match["day_after"] or match["day_before"])
+            year = int(match["year_after"] or match["year_before"])
+            parts = [(year, month, day)]
+        for year, month, day in parts:
+            try:
+                dates.add(date(year, month, day).isoformat())
+            except ValueError:
+                continue
     return dates.pop() if len(dates) == 1 else None
 
 
@@ -82,22 +105,30 @@ def _subscription(message, body):
 
 
 def _classify(clause):
+    if CONDITIONAL_SIGNUP.search(clause):
+        return "promo"
+    if PROMO.search(clause):
+        billing_fact = (
+            PAYMENT.search(clause) or CONFIRMED.search(clause) or FAILED.search(clause)
+            or (SCHEDULED_RENEWAL.search(clause) and _stated_date(clause))
+        )
+        if not billing_fact or MARKETING_CTA.search(clause):
+            return "promo"
     for pattern, kind in (
         (REQUESTED, "cancellation_requested"),
         (CONFIRMED, "cancellation_confirmed"),
         (FAILED, "failed"),
-        (PROMO, "promo"),
         (TRIAL, "trial_conversion"),
         (PAYMENT, "payment"),
         (RENEWAL, "renewal"),
     ):
         if pattern.search(clause):
-            # A decline or promo is classified above any apparent payment.
             return kind
     return None
 
 
 def _segments(text):
+    text = re.sub(rf"\b({MONTH})\.(?=\s+\d)", r"\1", text, flags=re.I)
     clauses = re.split(r"(?<=[.!?])\s+|[\r\n;]+|,\s+(?:and\s+)?(?=(?:your\s+)?(?:next charge|renewal|will be charged)\b)", text, flags=re.I)
     grouped = []
     for clause in clauses:
@@ -127,15 +158,20 @@ def extract_events(messages):
         key = _subscription(message, message["body_text"].strip() or contents)
         seen = set()
         segments = _segments(message["body_text"]) or _segments(contents)
-        recurring = re.search(r"\b(?:auto[- ]?renews?|renews?)\s+(?:monthly|annually|yearly)\b", contents, re.I)
+        recurring = re.search(
+            r"\b(?:(?:auto[- ]?renews?|renews?)\s+(?:monthly|annually|yearly)|"
+            r"(?:monthly|annual|yearly)\s+(?:subscription|billing))\b", contents, re.I,
+        )
         for kind, evidence in segments:
+            if kind == "promo":
+                continue
             currency, amount = _money(evidence)
             stated = _stated_date(evidence)
             cycle_match = CYCLE.search(evidence) or CYCLE.search(message["subject"])
             if not cycle_match and kind == "payment" and recurring:
                 cycle_match = CYCLE.search(recurring[0])
             cycle = None if not cycle_match else ("monthly" if cycle_match[0].lower() == "monthly" else "annual")
-            if kind == "payment" and not stated and re.search(r"\btoday\b", evidence, re.I):
+            if kind == "payment" and not stated:
                 stated = datetime.fromisoformat(message["received_at"].replace("Z", "+00:00")).date().isoformat()
             next_date = stated if kind in {"renewal", "trial_conversion"} else None
             ref = _reference(evidence)

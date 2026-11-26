@@ -1,12 +1,13 @@
 """Run Gemini against one isolated MCP snapshot."""
 import asyncio
 from contextlib import aclosing, contextmanager
-from datetime import date, timedelta
 import json
 import os
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+
+from .review_rules import reviewable_charges
 
 DEFAULT_GOAL = "Find what needs attention before my next charge."
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
@@ -19,8 +20,10 @@ Start with get_portfolio. For a totals question, those figures are sufficient. F
 specific plan with conflicting, disabled, or uncertain renewal evidence, check its timeline
 with get_subscription_events and cite the source that determines the next charge.
 For the default review goal, prioritize a confirmed trial conversion within seven days.
-Propose at most one item using upsert_review_item. Copy the due row's subscription_key,
-kind, date (as target_date), and evidence_ids verbatim, and use state "open".
+Propose at most one item using upsert_review_item. Only use due rows marked
+can_propose_review=true. Copy subscription_key, kind, exact YYYY-MM-DD date (as
+target_date), and evidence_ids verbatim. Use state "open". If there is no eligible row,
+describe the evidence without proposing a review. Label estimated dates as estimates.
 Only use that tool for the default review or if the user explicitly asks for a proposal.
 Quote amounts exactly as returned by the tools, including the currency and punctuation.
 Distinguish proposals from saved items.
@@ -67,6 +70,8 @@ def _tool_payload(response):
 def _capture(function_response, trace, items):
     response = function_response.response or {}
     payload = _tool_payload(response)
+    if function_response.name == "upsert_review_item" and payload.get("proposal_skipped"):
+        return  # The local guard handled it without calling MCP.
     success = not (response.get("isError") or response.get("error") or payload.get("error"))
     evidence = payload.get("evidence_ids", []) if success else []
     trace.append({
@@ -80,7 +85,7 @@ def _capture(function_response, trace, items):
             items.append(item)
 
 
-async def _run(path, goal, model, key, trace, items):
+async def _run(path, goal, model, key, trace, items, reviewable):
     from google.adk.agents import LlmAgent
     from google.adk.agents.run_config import RunConfig
     from google.adk.models.google_llm import Gemini
@@ -89,13 +94,29 @@ async def _run(path, goal, model, key, trace, items):
     from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
     from google.genai import types
 
+    tools = ["get_portfolio", "get_subscription_events"]
+    if reviewable:
+        tools.append("upsert_review_item")
+
+    def guard_proposal(tool, args, tool_context):
+        if tool.name == "upsert_review_item" and not any(
+            row["subscription_key"] == args.get("subscription_key")
+            and row["kind"] == args.get("kind") and row["date"] == args.get("target_date")
+            for row in reviewable
+        ):
+            return {"proposal_skipped": "Use the exact date from a due row marked can_propose_review=true."}
+        return None
+
     toolset = McpToolset(connection_params=StdioConnectionParams(
         server_params=server_parameters(path), timeout=10
-    ))
+    ), tool_filter=tools)
     runner = None
     try:
         llm = Gemini(model=model, client_kwargs={"api_key": key, "enterprise": False})
-        agent = LlmAgent(name="billing_review", model=llm, instruction=INSTRUCTION, tools=[toolset])
+        agent = LlmAgent(
+            name="billing_review", model=llm, instruction=INSTRUCTION, tools=[toolset],
+            before_tool_callback=guard_proposal,
+        )
         runner = InMemoryRunner(agent=agent, app_name="subguard")
         session = await runner.session_service.create_session(app_name="subguard", user_id="review")
         prompt = types.Content(role="user", parts=[types.Part(text=goal)])
@@ -139,9 +160,10 @@ async def run_review(portfolio, goal=None):
     model = os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
     review_goal = goal or DEFAULT_GOAL
     try:
+        reviewable = list(reviewable_charges(portfolio))
         with snapshot_file(portfolio) as path:
             async with asyncio.timeout(REVIEW_TIMEOUT):
-                summary = await _run(path, review_goal, model, key, trace, items)
+                summary = await _run(path, review_goal, model, key, trace, items, reviewable)
     except TimeoutError:
         summary = "The Gemini or MCP review timed out."
     except Exception as error:
@@ -153,7 +175,7 @@ async def run_review(portfolio, goal=None):
         if (
             summary and latest_outcomes
             and all(outcome == "ok" for outcome in latest_outcomes.values())
-            and _trial_proposal_complete(portfolio, review_goal, items)
+            and _trial_proposal_complete(reviewable, review_goal, items)
         ):
             return {"status": "complete", "summary": summary, "items": items, "trace": trace}
         summary = "The review did not return a complete, verified MCP result."
@@ -161,14 +183,8 @@ async def run_review(portfolio, goal=None):
     return {"status": "partial" if trace else "failed", "summary": summary, "items": [], "trace": trace}
 
 
-def _trial_proposal_complete(portfolio, goal, items):
+def _trial_proposal_complete(reviewable, goal, items):
     if goal != DEFAULT_GOAL:
         return True
-    start = portfolio["as_of"]
-    last = (date.fromisoformat(start) + timedelta(days=7)).isoformat()
-    confirmed_trial = any(
-        row["kind"] == "trial_conversion" and row["date_basis"] == "confirmed"
-        and row["date"] and start <= row["date"] <= last
-        for row in portfolio["due"]
-    )
+    confirmed_trial = any(row["kind"] == "trial_conversion" for row in reviewable)
     return not confirmed_trial or any(item["kind"] == "trial_conversion" for item in items)
