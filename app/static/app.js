@@ -153,15 +153,49 @@ function renderDashboard(data) {
   for (const ev of data.evidence || []) {
     evidenceMap.set(ev.source_id, ev);
   }
+
+  // Render portfolio.needs_confirmation ("Is this a subscription?")
+  const needsConfirmation = portfolio.needs_confirmation || [];
+  for (const item of needsConfirmation) {
+    const ev = evidenceMap.get(item.source_id);
+    const firstEvent = (item.events && item.events[0]) || {};
+    const amt =
+      firstEvent.amount_minor !== null && firstEvent.amount_minor !== undefined && firstEvent.currency
+        ? formatMoney(firstEvent.currency, firstEvent.amount_minor)
+        : "Amount not stated";
+    const srcLabel = ev ? `${ev.sender_domain} — ${ev.subject}` : item.source_id;
+    const card = document.createElement("div");
+    card.className = "item-row";
+    card.style.borderColor = "#fcd34d";
+    card.style.background = "#fffbeb";
+    card.innerHTML = `
+      <div class="item-head">
+        <strong>${item.subscription_key}</strong>
+        <span class="badge badge-warn">Needs confirmation</span>
+      </div>
+      <div class="small">Detected charge: <strong>${amt}</strong> (${firstEvent.event_date || "date unknown"})</div>
+      <div class="small muted" style="margin-top:4px;">Source: <a href="/api/evidence/${encodeURIComponent(item.source_id)}" target="_blank" rel="noopener noreferrer">${srcLabel}</a></div>
+      <div style="margin-top:8px; padding-top:8px; border-top:1px dashed #fcd34d;">
+        <div class="small"><strong>Is this a recurring subscription?</strong></div>
+        <div class="cta-row" style="margin-top:6px;">
+          <button class="btn btn-small btn-primary" onclick="confirmSubscription('${item.source_id}', true)">Yes, it's a subscription</button>
+          <button class="btn btn-small btn-secondary" onclick="confirmSubscription('${item.source_id}', false)">No, one-time / ignore</button>
+        </div>
+      </div>
+    `;
+    subsList.appendChild(card);
+  }
+
   const dueMap = new Map();
   for (const d of portfolio.due || []) {
     dueMap.set(d.subscription_key, d);
   }
+  const billingPrompts = portfolio.billing_prompts || {};
   for (const sub of portfolio.subscriptions || []) {
     const key = sub.subscription_key;
     const due = dueMap.get(key);
-    const timeline = (portfolio.timelines && portfolio.timelines[key]) || [];
     const userChoice = (data.user_estimates || {})[key];
+    const prompt = billingPrompts[key];
     const sourcesHtml = (sub.evidence_ids || [])
       .map((sid) => {
         const ev = evidenceMap.get(sid);
@@ -180,15 +214,16 @@ function renderDashboard(data) {
     } else if (userChoice && userChoice.estimate && userChoice.estimate.date) {
       const e = userChoice.estimate;
       const amount = e.amount_minor === null || e.amount_minor === undefined ? "Amount unknown" : formatMoney(e.currency, e.amount_minor);
-      dueHtml = `<div class="small">Next charge: <strong>${amount}</strong> on <strong>${e.date}</strong> <span class="badge badge-warn">estimated (you chose ${userChoice.cycle})</span></div>`;
-    } else if (userChoice) {
-      dueHtml = `<div class="small muted">You chose <strong>${userChoice.cycle}</strong>, but no dated payment was found to calculate the next date.</div>`;
+      const label = userChoice.cycle ? `you chose ${userChoice.cycle}` : "your entered date";
+      dueHtml = `<div class="small">Next charge: <strong>${amount}</strong> on <strong>${e.date}</strong> <span class="badge badge-warn">estimated (${label})</span></div>`;
+    } else if (userChoice && userChoice.cycle) {
+      dueHtml = `<div class="small muted">You chose <strong>${userChoice.cycle}</strong>; enter the next billing date below to schedule reminders.</div>`;
     } else {
       dueHtml = `<div class="small muted">Next charge date unknown</div>`;
     }
 
     const effectiveDate = (due && due.date) || (userChoice && userChoice.estimate && userChoice.estimate.date) || null;
-    const isCancelled = sub.auto_renew === false || sub.status === "canceled" || sub.status === "cancelled";
+    const isCancelled = sub.auto_renew === false || sub.status === "canceled" || sub.status === "cancelled" || sub.status === "suspended";
     const subReminders = (data.reminders || []).filter((r) => r.subscription_key === key);
     const remindersSummary = subReminders.length
       ? `<div class="small muted" style="margin-top:4px;">Scheduled reminders (${data.smtp_configured ? "Gmail email + in-app" : "in-app; set SMTP_EMAIL & SMTP_APP_PASSWORD in .env for Gmail email"}): ${subReminders.map((r) => `${r.reminder_type} (${r.status}, ${formatKarachi(r.due_at)})`).join(" · ")}</div>`
@@ -202,20 +237,31 @@ function renderDashboard(data) {
            </div>`
         : "";
 
-    const hasPayment = timeline.some((e) => e.kind === "payment");
-    const cycleKnown = timeline.some((e) => e.cycle === "monthly" || e.cycle === "annual");
-    const askCycle = hasPayment && !cycleKnown && !(due && due.date && due.cycle_basis !== "user_selected");
-    const chosen = userChoice ? userChoice.cycle : "";
-    const cycleHtml = askCycle
-      ? `<div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
-           <div class="small muted">The email doesn't say how often this renews. Is it monthly or yearly?</div>
-           <div class="cta-row" style="margin-top:6px;">
-             <button class="btn btn-small ${chosen === "monthly" ? "btn-primary" : "btn-secondary"}" onclick="saveCycleChoice('${key}', 'monthly')">Monthly</button>
-             <button class="btn btn-small ${chosen === "annual" ? "btn-primary" : "btn-secondary"}" onclick="saveCycleChoice('${key}', 'annual')">Annual</button>
-             ${chosen ? `<button class="btn btn-small btn-secondary" onclick="saveCycleChoice('${key}', 'clear')">Clear</button>` : ""}
-           </div>
-         </div>`
-      : "";
+    const chosen = userChoice && userChoice.cycle ? userChoice.cycle : "";
+    const savedDate = (userChoice && userChoice.next_charge_date) || "";
+    let promptHtml = "";
+    if (prompt && prompt.field === "cycle") {
+      const needDateInput = !prompt.can_estimate_from_payment || (chosen && !(userChoice && userChoice.estimate && userChoice.estimate.date));
+      promptHtml = `<div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
+        <div class="small muted">The email doesn't say how often this renews. Is it monthly or yearly?</div>
+        <div class="cta-row" style="margin-top:6px;">
+          <button class="btn btn-small ${chosen === "monthly" ? "btn-primary" : "btn-secondary"}" onclick="saveCycleChoice('${key}', 'monthly')">Monthly</button>
+          <button class="btn btn-small ${chosen === "annual" ? "btn-primary" : "btn-secondary"}" onclick="saveCycleChoice('${key}', 'annual')">Annual</button>
+          ${needDateInput ? `<input type="date" id="next-date-${key}" value="${savedDate}" class="btn btn-small" />
+          <button class="btn btn-small btn-secondary" onclick="saveNextDate('${key}')">Save next date</button>` : ""}
+          ${chosen || savedDate ? `<button class="btn btn-small btn-secondary" onclick="saveCycleChoice('${key}', 'clear')">Clear</button>` : ""}
+        </div>
+      </div>`;
+    } else if (prompt && prompt.field === "next_charge_date") {
+      promptHtml = `<div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
+        <div class="small muted">Billing cycle is known, but the next charge date isn't in recent emails. Enter next renewal date:</div>
+        <div class="cta-row" style="margin-top:6px;">
+          <input type="date" id="next-date-${key}" value="${savedDate}" class="btn btn-small" />
+          <button class="btn btn-small btn-primary" onclick="saveNextDate('${key}')">Save next date</button>
+          ${savedDate ? `<button class="btn btn-small btn-secondary" onclick="saveCycleChoice('${key}', 'clear')">Clear</button>` : ""}
+        </div>
+      </div>`;
+    }
 
     row.innerHTML = `
       <div class="item-head">
@@ -227,7 +273,7 @@ function renderDashboard(data) {
       <div class="small muted" style="margin-top:4px;">Source: ${sourcesHtml || "—"}</div>
       ${remindersSummary}
       ${remindHtml}
-      ${cycleHtml}
+      ${promptHtml}
     `;
     subsList.appendChild(row);
   }
@@ -263,6 +309,40 @@ async function saveCycleChoice(subscriptionKey, cycle) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ subscription_key: subscriptionKey, cycle }),
+    });
+    await loadDashboard();
+  } catch (err) {
+    showAlert(err.message);
+  }
+}
+
+async function saveNextDate(subscriptionKey) {
+  clearAlert();
+  const input = document.getElementById(`next-date-${subscriptionKey}`);
+  const val = input ? input.value : "";
+  if (!val) {
+    showAlert("Please pick a valid next renewal date.");
+    return;
+  }
+  try {
+    await apiFetch("/api/cycle-choice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription_key: subscriptionKey, next_charge_date: val }),
+    });
+    await loadDashboard();
+  } catch (err) {
+    showAlert(err.message);
+  }
+}
+
+async function confirmSubscription(sourceId, isSubscription) {
+  clearAlert();
+  try {
+    await apiFetch("/api/confirm-subscription", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_id: sourceId, is_subscription: isSubscription }),
     });
     await loadDashboard();
   } catch (err) {

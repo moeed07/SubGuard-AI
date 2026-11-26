@@ -151,12 +151,19 @@ async def auth_google_callback(
     )
 
     # Run first scan automatically on successful callback
+    existing_portfolio = store.get_portfolio(account_id)
+    needs_reprocess = store.clear_legacy_events_without_basis(account_id) or (
+        existing_portfolio is not None and "billing_prompts" not in existing_portfolio
+    )
+    if needs_reprocess:
+        store.clear_all_events_for_reprocess(account_id)
+    known_ids = set() if needs_reprocess else {e["gmail_message_id"] for e in store.list_evidence(account_id)}
     scan_out = await scan_gmail_messages(
         access_token=access_token,
         account_id=account_id,
         max_pages=settings.gmail_max_pages,
         max_messages=settings.gmail_max_messages,
-        known_message_ids={e["gmail_message_id"] for e in store.list_evidence(account_id)},
+        known_message_ids=known_ids,
     )
     as_of = datetime.now(ZoneInfo("Asia/Karachi")).strftime("%Y-%m-%d")
     intel = getattr(request.app.state, "intelligence", None)

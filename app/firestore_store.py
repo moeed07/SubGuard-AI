@@ -110,6 +110,39 @@ class FirestoreStore:
         for ev in events:
             col.document(ev["event_id"]).set(ev, merge=True)
 
+    def replace_events_for_sources(
+        self,
+        account_id: str,
+        source_ids: list[str],
+        events: list[dict[str, Any]],
+    ) -> None:
+        col = self._acct_ref(account_id).collection("events")
+        for sid in source_ids:
+            for doc in col.where("source_id", "==", sid).stream():
+                doc.reference.delete()
+        if events:
+            self.upsert_events(account_id, events)
+
+    def set_source_subscription_basis(
+        self,
+        account_id: str,
+        source_id: str,
+        subscription_basis: str,
+    ) -> None:
+        col = self._acct_ref(account_id).collection("events")
+        for doc in col.where("source_id", "==", sid := source_id).stream():
+            if subscription_basis == "one_time":
+                doc.reference.delete()
+            else:
+                doc.reference.set({"subscription_basis": subscription_basis}, merge=True)
+
+    def clear_all_events_for_reprocess(self, account_id: str) -> None:
+        for doc in self._acct_ref(account_id).collection("events").stream():
+            doc.reference.delete()
+
+    def clear_legacy_events_without_basis(self, account_id: str) -> bool:
+        return False
+
     def list_events(self, account_id: str) -> list[dict[str, Any]]:
         docs = self._acct_ref(account_id).collection("events").stream()
         items = [d.to_dict() for d in docs]
@@ -307,17 +340,36 @@ class FirestoreStore:
         items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return items
 
-    def set_cycle_choice(self, account_id: str, subscription_key: str, cycle: str) -> None:
-        self._acct_ref(account_id).collection("cycle_choices").document(subscription_key).set(
-            {"subscription_key": subscription_key, "cycle": cycle, "updated_at": _utc_now_iso()}
-        )
+    def set_cycle_choice(
+        self,
+        account_id: str,
+        subscription_key: str,
+        cycle: str,
+        next_charge_date: Optional[str] = None,
+    ) -> None:
+        data: dict[str, Any] = {"subscription_key": subscription_key, "updated_at": _utc_now_iso()}
+        if cycle:
+            data["cycle"] = cycle
+        if next_charge_date is not None:
+            data["next_charge_date"] = next_charge_date
+        self._acct_ref(account_id).collection("cycle_choices").document(subscription_key).set(data, merge=True)
 
     def clear_cycle_choice(self, account_id: str, subscription_key: str) -> None:
         self._acct_ref(account_id).collection("cycle_choices").document(subscription_key).delete()
 
     def list_cycle_choices(self, account_id: str) -> dict[str, str]:
         docs = self._acct_ref(account_id).collection("cycle_choices").stream()
-        return {d.id: (d.to_dict() or {}).get("cycle", "") for d in docs}
+        return {d.id: (d.to_dict() or {}).get("cycle", "") for d in docs if (d.to_dict() or {}).get("cycle")}
+
+    def list_cycle_choice_details(self, account_id: str) -> dict[str, dict[str, Optional[str]]]:
+        docs = self._acct_ref(account_id).collection("cycle_choices").stream()
+        return {
+            d.id: {
+                "cycle": (d.to_dict() or {}).get("cycle") or None,
+                "next_charge_date": (d.to_dict() or {}).get("next_charge_date"),
+            }
+            for d in docs
+        }
 
     def delete_account_data(self, account_id: str) -> None:
         acct = self._acct_ref(account_id)

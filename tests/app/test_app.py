@@ -511,3 +511,79 @@ def test_auto_5d_1d_reminders_and_email_delivery(monkeypatch: pytest.MonkeyPatch
     assert delivered == 2
     assert len(sent_emails) == 2
     assert sent_emails[0]["to"] == "student@example.com"
+
+
+def test_subscription_basis_reprocess_and_confirm_endpoint() -> None:
+    from intelligence.api import build_portfolio
+
+    store = LocalStore(":memory:")
+    app = create_app(settings=_test_settings(), store=store)
+    client = TestClient(app)
+
+    acct = "acct_confirm_test"
+    store.upsert_account(acct, is_demo=True)
+    ver = store.next_scan_version(acct)
+
+    # First insert a stale event and an uncertain event
+    store.upsert_events(
+        acct,
+        [
+            {
+                "event_id": "s1:0",
+                "source_id": "s1",
+                "received_at": "2026-11-01T08:00:00Z",
+                "subscription_key": "stale-shop",
+                "kind": "payment",
+                "currency": "PKR",
+                "amount_minor": 100000,
+                "cycle": None,
+                "transaction_ref": None,
+                "event_date": "2026-11-01",
+                "effective_date": None,
+                "next_charge_date": None,
+                "date_basis": "unknown",
+                "subscription_basis": "subscription",
+            },
+            {
+                "event_id": "s2:0",
+                "source_id": "s2",
+                "received_at": "2026-11-02T08:00:00Z",
+                "subscription_key": "bank-charge",
+                "kind": "payment",
+                "currency": "PKR",
+                "amount_minor": 120000,
+                "cycle": None,
+                "transaction_ref": None,
+                "event_date": "2026-11-02",
+                "effective_date": None,
+                "next_charge_date": None,
+                "date_basis": "unknown",
+                "subscription_basis": "uncertain",
+            },
+        ],
+    )
+    # Reprocessing s1 with [] removes stale-shop
+    store.replace_events_for_sources(acct, ["s1"], [])
+    events = store.list_events(acct)
+    assert len(events) == 1
+    assert events[0]["subscription_basis"] == "uncertain"
+
+    portfolio = build_portfolio(events, "2026-11-26", "Asia/Karachi")
+    store.save_portfolio(acct, ver, portfolio)
+    assert len(portfolio["needs_confirmation"]) == 1
+    assert portfolio["subscriptions"] == []
+
+    token = app.state.security.create_session_token("sid_c", account_id=acct, is_demo=True)
+    csrf = app.state.security.create_csrf_token("sid_c")
+    client.cookies.set(app.state.security.SESSION_COOKIE_NAME, token)
+
+    # Confirm s2 as a subscription -> moves from needs_confirmation to subscriptions
+    resp = client.post(
+        "/api/confirm-subscription",
+        headers={"X-CSRF-Token": csrf},
+        json={"source_id": "s2", "is_subscription": True},
+    )
+    assert resp.status_code == 200
+    dash = client.get("/api/dashboard").json()
+    assert dash["portfolio"]["needs_confirmation"] == []
+    assert [s["subscription_key"] for s in dash["portfolio"]["subscriptions"]] == ["bank-charge"]

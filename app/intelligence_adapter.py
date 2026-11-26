@@ -96,8 +96,9 @@ async def process_scan_output(
         store.upsert_evidence(account_id, scan_output.evidence_records)
 
     extracted = backend.extract_events(scan_output.messages) if scan_output.messages else []
-    if extracted:
-        store.upsert_events(account_id, extracted)
+    if scan_output.messages:
+        scanned_sources = [m["source_id"] for m in scan_output.messages]
+        store.replace_events_for_sources(account_id, scanned_sources, extracted)
 
     all_events = store.list_events(account_id)
 

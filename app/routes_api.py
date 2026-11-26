@@ -205,26 +205,41 @@ async def get_dashboard(request: Request) -> Response:
 def _user_cycle_estimates(
     store: LocalStore, account_id: str, portfolio: Optional[dict[str, Any]]
 ) -> dict[str, Any]:
-    """Re-apply each saved Monthly/Annual choice through Ahmed's estimate function."""
-    choices = store.list_cycle_choices(account_id)
-    if not choices or not portfolio:
+    """Re-apply each saved Monthly/Annual or next_charge_date choice."""
+    details_map = store.list_cycle_choice_details(account_id)
+    if not details_map or not portfolio:
         return {}
     try:
         from intelligence.api import estimate_renewal_from_selection  # type: ignore
     except ImportError:
         estimate_renewal_from_selection = None
     known = {s.get("subscription_key") for s in portfolio.get("subscriptions", [])}
+    timelines = portfolio.get("timelines") or {}
     result: dict[str, Any] = {}
-    for sub_key, cycle in choices.items():
+    for sub_key, info in details_map.items():
         if sub_key not in known:
             continue
+        cycle = info.get("cycle")
+        custom_date = info.get("next_charge_date")
         estimate = None
-        if estimate_renewal_from_selection is not None:
+        if cycle and estimate_renewal_from_selection is not None:
             try:
                 estimate = estimate_renewal_from_selection(portfolio, sub_key, cycle)
             except Exception:
                 estimate = None
-        result[sub_key] = {"cycle": cycle, "estimate": estimate}
+        if custom_date:
+            tl = timelines.get(sub_key) or []
+            last_ev = next((e for e in reversed(tl) if e.get("amount_minor") is not None), tl[-1] if tl else {})
+            estimate = {
+                "subscription_key": sub_key,
+                "date": custom_date,
+                "amount_minor": last_ev.get("amount_minor") if estimate is None else estimate.get("amount_minor"),
+                "currency": last_ev.get("currency") if estimate is None else estimate.get("currency"),
+                "kind": "renewal",
+                "date_basis": "estimated",
+                "cycle_basis": "user_selected",
+            }
+        result[sub_key] = {"cycle": cycle, "next_charge_date": custom_date, "estimate": estimate}
     return result
 
 
@@ -256,12 +271,21 @@ async def refresh_scan(request: Request, body: Optional[dict[str, Any]] = Body(d
                 {"detail": "Gmail session expired. Please reconnect Gmail.", "reconnect_required": True},
                 status_code=401,
             )
+        existing_portfolio = store.get_portfolio(account_id)
+        needs_reprocess = (
+            bool((body or {}).get("reprocess", False))
+            or store.clear_legacy_events_without_basis(account_id)
+            or (existing_portfolio is not None and "billing_prompts" not in existing_portfolio)
+        )
+        if needs_reprocess:
+            store.clear_all_events_for_reprocess(account_id)
+        known_ids = set() if needs_reprocess else {e["gmail_message_id"] for e in store.list_evidence(account_id)}
         scan_out = await scan_gmail_messages(
             access_token=access_token,
             account_id=account_id,
             max_pages=settings.gmail_max_pages,
             max_messages=settings.gmail_max_messages,
-            known_message_ids={e["gmail_message_id"] for e in store.list_evidence(account_id)},
+            known_message_ids=known_ids,
         )
         as_of = datetime.now(ZoneInfo(DEMO_TIMEZONE)).strftime("%Y-%m-%d")
 
@@ -435,7 +459,7 @@ async def get_evidence_link(source_id: str, request: Request) -> Response:
 
 @router.post("/api/cycle-choice")
 async def save_cycle_choice(request: Request, body: dict[str, Any] = Body(...)) -> Response:
-    """Persist the user's Monthly/Annual answer for a subscription whose cycle is unknown."""
+    """Persist the user's Monthly/Annual or next_charge_date answer for a subscription."""
     payload, err = _require_auth_and_csrf(request)
     if err:
         return err
@@ -452,19 +476,70 @@ async def save_cycle_choice(request: Request, body: dict[str, Any] = Body(...)) 
         return JSONResponse({"detail": "Unknown subscription"}, status_code=404)
 
     cycle = (body.get("cycle") or "").strip().lower()
+    next_charge_date = (body.get("next_charge_date") or "").strip() or None
     if cycle == "clear":
         store.clear_cycle_choice(account_id, sub_key)
         return JSONResponse({"ok": True, "cleared": True})
-    if cycle not in ("monthly", "annual"):
+    if cycle and cycle not in ("monthly", "annual"):
         return JSONResponse({"detail": "Cycle must be monthly or annual"}, status_code=400)
+    if next_charge_date:
+        try:
+            datetime.strptime(next_charge_date, "%Y-%m-%d")
+        except ValueError:
+            return JSONResponse({"detail": "Date must be YYYY-MM-DD"}, status_code=400)
+    if not cycle and not next_charge_date:
+        return JSONResponse({"detail": "Provide cycle or next_charge_date"}, status_code=400)
 
-    store.set_cycle_choice(account_id, sub_key, cycle)
-    entry = _user_cycle_estimates(store, account_id, portfolio).get(sub_key, {"cycle": cycle, "estimate": None})
+    store.set_cycle_choice(account_id, sub_key, cycle, next_charge_date=next_charge_date)
+    entry = _user_cycle_estimates(store, account_id, portfolio).get(
+        sub_key, {"cycle": cycle or None, "next_charge_date": next_charge_date, "estimate": None}
+    )
     acct = store.get_account(account_id)
     est = entry.get("estimate")
     if acct and not acct.get("is_demo") and est and est.get("date"):
         auto_schedule_5d_and_1d_reminders(store, account_id, sub_key, est["date"], DEMO_TIMEZONE)
     return JSONResponse({"ok": True, **entry})
+
+
+@router.post("/api/confirm-subscription")
+async def confirm_subscription_source(request: Request, body: dict[str, Any] = Body(...)) -> Response:
+    """Confirm or dismiss an uncertain billing email from portfolio.needs_confirmation."""
+    payload, err = _require_auth_and_csrf(request)
+    if err:
+        return err
+
+    store: LocalStore = request.app.state.store
+    account_id = payload["aid"]
+    acct = store.get_account(account_id)
+    portfolio = store.get_portfolio(account_id)
+    if not acct or not portfolio:
+        return JSONResponse({"detail": "No active portfolio found"}, status_code=400)
+
+    source_id = (body.get("source_id") or "").strip()
+    pending_sources = {item.get("source_id") for item in portfolio.get("needs_confirmation", [])}
+    if not source_id or source_id not in pending_sources:
+        return JSONResponse({"detail": "Unknown confirmation source"}, status_code=404)
+
+    is_sub = bool(body.get("is_subscription", False))
+    store.set_source_subscription_basis(
+        account_id, source_id, "subscription" if is_sub else "one_time"
+    )
+
+    from app.intelligence_adapter import get_default_intelligence
+
+    intel = getattr(request.app.state, "intelligence", None) or get_default_intelligence()
+    all_events = store.list_events(account_id)
+    as_of = portfolio.get("as_of") or datetime.now(ZoneInfo(DEMO_TIMEZONE)).strftime("%Y-%m-%d")
+    new_portfolio = intel.build_portfolio(all_events, as_of, DEMO_TIMEZONE)
+    ver = int(acct.get("scan_version") or 1)
+    store.save_portfolio(account_id, ver, new_portfolio)
+    if is_sub and not acct.get("is_demo"):
+        for due_item in new_portfolio.get("due", []):
+            if due_item.get("subscription_key") and due_item.get("date"):
+                auto_schedule_5d_and_1d_reminders(
+                    store, account_id, due_item["subscription_key"], due_item["date"], DEMO_TIMEZONE
+                )
+    return JSONResponse({"ok": True, "is_subscription": is_sub})
 
 
 @router.post("/api/reminders/deliver")

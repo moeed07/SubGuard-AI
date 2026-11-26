@@ -67,6 +67,7 @@ class LocalStore:
                     effective_date TEXT,
                     next_charge_date TEXT,
                     date_basis TEXT,
+                    subscription_basis TEXT,
                     PRIMARY KEY (account_id, event_id)
                 );
                 CREATE TABLE IF NOT EXISTS portfolios (
@@ -115,6 +116,7 @@ class LocalStore:
                     account_id TEXT NOT NULL,
                     subscription_key TEXT NOT NULL,
                     cycle TEXT NOT NULL,
+                    next_charge_date TEXT,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (account_id, subscription_key)
                 );
@@ -123,6 +125,19 @@ class LocalStore:
             self._conn.commit()
             try:
                 self._conn.execute("ALTER TABLE accounts ADD COLUMN encrypted_email TEXT")
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            try:
+                self._conn.execute("ALTER TABLE cycle_choices ADD COLUMN next_charge_date TEXT")
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            try:
+                self._conn.execute("ALTER TABLE events ADD COLUMN subscription_basis TEXT")
+                # Clear legacy events/evidence extracted before subscription_basis existed so next scan replaces stale cards
+                self._conn.execute("DELETE FROM events WHERE subscription_basis IS NULL")
+                self._conn.execute("DELETE FROM evidence WHERE source_id NOT IN (SELECT DISTINCT source_id FROM events)")
                 self._conn.commit()
             except sqlite3.OperationalError:
                 pass
@@ -274,8 +289,8 @@ class LocalStore:
                     INSERT INTO events (
                         account_id, event_id, source_id, received_at, subscription_key,
                         kind, currency, amount_minor, cycle, transaction_ref,
-                        event_date, effective_date, next_charge_date, date_basis
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        event_date, effective_date, next_charge_date, date_basis, subscription_basis
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(account_id, event_id) DO UPDATE SET
                         source_id = excluded.source_id,
                         received_at = excluded.received_at,
@@ -288,7 +303,8 @@ class LocalStore:
                         event_date = excluded.event_date,
                         effective_date = excluded.effective_date,
                         next_charge_date = excluded.next_charge_date,
-                        date_basis = excluded.date_basis
+                        date_basis = excluded.date_basis,
+                        subscription_basis = excluded.subscription_basis
                     """,
                     (
                         account_id,
@@ -305,9 +321,70 @@ class LocalStore:
                         ev.get("effective_date"),
                         ev.get("next_charge_date"),
                         ev.get("date_basis"),
+                        ev.get("subscription_basis"),
                     ),
                 )
             self._conn.commit()
+
+    def replace_events_for_sources(
+        self,
+        account_id: str,
+        source_ids: list[str],
+        events: list[dict[str, Any]],
+    ) -> None:
+        """Delete previous derived events for scanned sources and insert the freshly extracted events."""
+        with self._lock:
+            for sid in source_ids:
+                self._conn.execute(
+                    "DELETE FROM events WHERE account_id = ? AND source_id = ?",
+                    (account_id, sid),
+                )
+            self._conn.commit()
+            if events:
+                self.upsert_events(account_id, events)
+
+    def set_source_subscription_basis(
+        self,
+        account_id: str,
+        source_id: str,
+        subscription_basis: str,
+    ) -> None:
+        """Confirm or reject an uncertain source as a subscription."""
+        with self._lock:
+            if subscription_basis == "one_time":
+                self._conn.execute(
+                    "DELETE FROM events WHERE account_id = ? AND source_id = ?",
+                    (account_id, source_id),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE events SET subscription_basis = ? WHERE account_id = ? AND source_id = ?",
+                    (subscription_basis, account_id, source_id),
+                )
+            self._conn.commit()
+
+    def clear_all_events_for_reprocess(self, account_id: str) -> None:
+        """Clear derived events for an account so old emails are reprocessed cleanly, keeping saved choices."""
+        with self._lock:
+            self._conn.execute("DELETE FROM events WHERE account_id = ?", (account_id,))
+            self._conn.commit()
+
+    def clear_legacy_events_without_basis(self, account_id: str) -> bool:
+        """If the account has pre-migration events without subscription_basis, clear them so Gmail rescans."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS cnt FROM events WHERE account_id = ? AND subscription_basis IS NULL",
+                (account_id,),
+            ).fetchone()
+            if row and int(row["cnt"]) > 0:
+                self._conn.execute("DELETE FROM events WHERE account_id = ? AND subscription_basis IS NULL", (account_id,))
+                self._conn.execute(
+                    "DELETE FROM evidence WHERE account_id = ? AND source_id NOT IN (SELECT DISTINCT source_id FROM events WHERE account_id = ?)",
+                    (account_id, account_id),
+                )
+                self._conn.commit()
+                return True
+            return False
 
     def list_events(self, account_id: str) -> list[dict[str, Any]]:
         with self._lock:
@@ -319,6 +396,8 @@ class LocalStore:
             for r in rows:
                 d = dict(r)
                 d.pop("account_id", None)
+                if d.get("subscription_basis") is None:
+                    d.pop("subscription_basis", None)
                 result.append(d)
             return result
 
@@ -587,17 +666,24 @@ class LocalStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def set_cycle_choice(self, account_id: str, subscription_key: str, cycle: str) -> None:
+    def set_cycle_choice(
+        self,
+        account_id: str,
+        subscription_key: str,
+        cycle: str,
+        next_charge_date: Optional[str] = None,
+    ) -> None:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO cycle_choices (account_id, subscription_key, cycle, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO cycle_choices (account_id, subscription_key, cycle, next_charge_date, updated_at)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(account_id, subscription_key) DO UPDATE SET
-                    cycle = excluded.cycle,
+                    cycle = CASE WHEN excluded.cycle != '' THEN excluded.cycle ELSE cycle_choices.cycle END,
+                    next_charge_date = COALESCE(excluded.next_charge_date, cycle_choices.next_charge_date),
                     updated_at = excluded.updated_at
                 """,
-                (account_id, subscription_key, cycle, utc_now_iso()),
+                (account_id, subscription_key, cycle, next_charge_date, utc_now_iso()),
             )
             self._conn.commit()
 
@@ -615,7 +701,21 @@ class LocalStore:
                 "SELECT subscription_key, cycle FROM cycle_choices WHERE account_id = ?",
                 (account_id,),
             ).fetchall()
-            return {r["subscription_key"]: r["cycle"] for r in rows}
+            return {r["subscription_key"]: r["cycle"] for r in rows if r["cycle"]}
+
+    def list_cycle_choice_details(self, account_id: str) -> dict[str, dict[str, Optional[str]]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT subscription_key, cycle, next_charge_date FROM cycle_choices WHERE account_id = ?",
+                (account_id,),
+            ).fetchall()
+            return {
+                r["subscription_key"]: {
+                    "cycle": r["cycle"] or None,
+                    "next_charge_date": r["next_charge_date"],
+                }
+                for r in rows
+            }
 
     def delete_account_data(self, account_id: str) -> None:
         with self._lock:
