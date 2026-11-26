@@ -1,5 +1,6 @@
 """Conservative extraction for plain-text billing notices."""
 from datetime import date, datetime
+import os
 import re
 
 from babel.core import get_global
@@ -148,23 +149,27 @@ def _reference(text):
     return shorthand[0] if len(set(shorthand)) == 1 else None
 
 
-def extract_events(messages):
-    """Extract explicit billing evidence from sanitized Message dictionaries."""
+def extract_events(messages, *, gemini_fallback=None):
+    """Extract billing evidence, optionally filling gaps from Gemini-selected excerpts."""
+    if gemini_fallback is None:
+        gemini_fallback = os.getenv("SUBGUARD_GEMINI_EXTRACTION", "").strip().lower() in {"1", "true"}
     events = {}
+    fallback_evidence = {}
     for message in messages:
         contents = "\n".join((message["subject"], message["body_text"])).strip()
         if not contents or FAKE_INSTRUCTION.search(contents):
             continue
         key = _subscription(message, message["body_text"].strip() or contents)
         seen = set()
-        segments = _segments(message["body_text"]) or _segments(contents)
+        segments = [
+            (kind, evidence) for kind, evidence in (_segments(message["body_text"]) or _segments(contents))
+            if kind != "promo"
+        ]
         recurring = re.search(
             r"\b(?:(?:auto[- ]?renews?|renews?)\s+(?:monthly|annually|yearly)|"
             r"(?:monthly|annual|yearly)\s+(?:subscription|billing))\b", contents, re.I,
         )
         for kind, evidence in segments:
-            if kind == "promo":
-                continue
             currency, amount = _money(evidence)
             stated = _stated_date(evidence)
             cycle_match = CYCLE.search(evidence) or CYCLE.search(message["subject"])
@@ -196,4 +201,13 @@ def extract_events(messages):
                 "next_charge_date": next_date,
                 "date_basis": "confirmed" if next_date else "unknown",
             }
+            if (
+                gemini_fallback and len(segments) == 1 and kind in {"payment", "renewal", "trial_conversion"}
+                and (cycle is None or amount is None)
+            ):
+                fallback_evidence[event_id] = contents
+
+    if fallback_evidence:
+        from .extraction_fallback import fill_missing_fields
+        fill_missing_fields(events, fallback_evidence, _money)
     return list(events.values())
