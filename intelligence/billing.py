@@ -113,6 +113,33 @@ def _estimate_using_receipt(plan, timeline, cycle, as_of):
     return estimate
 
 
+def _estimate_from_payment_history(timeline, as_of):
+    # A second copy of the same payment cannot establish a billing interval.
+    dated = (event for event in timeline
+             if event["kind"] == "payment" and event["event_date"] and event["event_date"] <= as_of)
+    payments = {}
+    for event in sorted(dated, key=lambda row: (_received(row), row["event_id"])):
+        payments.setdefault(_payment_key(event), event)
+
+    latest = sorted(payments.values(), key=lambda event: event["event_date"])[-2:]
+    if len(latest) != 2 or any(event["cycle"] is not None for event in latest):
+        return None
+    previous, current = latest
+    gap = (date.fromisoformat(current["event_date"]) - date.fromisoformat(previous["event_date"])).days
+    if 25 <= gap <= 35:
+        cycle = "monthly"
+    elif 350 <= gap <= 380:
+        cycle = "annual"
+    else:
+        return None
+
+    estimate = _renewal_from_payment(current, current["event_date"], cycle, as_of)
+    if estimate:
+        estimate["cycle_basis"] = "payment_history"
+        estimate["evidence_ids"] = _sources(latest)
+    return estimate
+
+
 def estimate_renewal_from_selection(portfolio, subscription_key, cycle):
     """Return a display-only estimate after the user selects their billing cycle."""
     subscription = next((row for row in portfolio["subscriptions"] if row["subscription_key"] == subscription_key), None)
@@ -122,7 +149,7 @@ def estimate_renewal_from_selection(portfolio, subscription_key, cycle):
         return None
     timeline = portfolio["timelines"][subscription_key]
     payment = next((event for event in reversed(timeline) if event["kind"] == "payment"), None)
-    if not payment or payment["cycle"] is not None or payment["amount_minor"] is None or not payment["currency"]:
+    if not payment or payment["cycle"] is not None:
         return None
     estimate = _estimate_using_receipt(payment, timeline, cycle, portfolio["as_of"])
     if estimate:
@@ -179,13 +206,15 @@ def build_portfolio(events, as_of, timezone):
         )
         plan = _plan_billing(timeline, stop)
         pending = list(_due_entries(timeline, stop, plan, as_of))
+        renewal = any(row["kind"] == "renewal" for row in pending)
         estimate = _estimated_renewal(plan, timeline, pending, as_of)
+        if not plan and not stop and not any(row["date"] for row in pending):
+            estimate = _estimate_from_payment_history(timeline, as_of)
         if estimate:
             pending = [row for row in pending if row["kind"] != "renewal" or row["date"]]
             pending.append(estimate)
         due.extend(pending)
         trial = any(row["kind"] == "trial_conversion" for row in pending)
-        renewal = any(row["kind"] == "renewal" for row in pending)
         cancellation_requested = any(event["kind"] == "cancellation_requested" for event in timeline)
         if plan:
             recurring_price = plan
