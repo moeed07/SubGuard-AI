@@ -18,18 +18,41 @@ DATE_PATTERN = re.compile(
     re.I,
 )
 REFERENCE = re.compile(r"\b(?:receipt|(?:transaction|payment|merchant)\s+(?:reference|ref|id)|ref)\s*[:#]?\s*([A-Z0-9]+(?:-[A-Z0-9]+)*)\b", re.I)
-CYCLE = re.compile(r"\b(monthly|annually?|yearly)\b", re.I)
+CYCLE = re.compile(r"\b(monthly|annual(?:ly)?|yearly)\b", re.I)
 FAKE_INSTRUCTION = re.compile(r"\b(?:ignore (?:all|previous|your|the)|pretend|instead output|assistant:|system:|mark .{0,40} as paid)\b", re.I)
 CONFIRMED = re.compile(r"\b(?:auto[- ]renew(?:al)?\s+(?:is\s+|has been\s+)?(?:off|disabled|turned off)|will not be (?:billed|charged)|subscription (?:has been |is )?cancelled|subscription (?:has been |is )?canceled)\b", re.I)
 REQUESTED = re.compile(r"\b(?:cancellation request|request to cancel|request was received)\b", re.I)
 FAILED = re.compile(r"\b(?:failed|declined|unsuccessful|unpaid|not (?:yet )?(?:paid|collected|charged))\b", re.I)
 PAYMENT = re.compile(r"\b(?:paid(?!\s+plan)|payment (?:was |has been )?(?:received|collected|confirmed|successful)|(?:successfully|already) charged|charged successfully|duplicate confirmation of .*?payment)\b", re.I)
+SUSPENDED = re.compile(r"\b(?:subscription|membership|plan)\b[^.!?\n]{0,55}\b(?:suspended|paused)\b", re.I)
 TRIAL = re.compile(r"\b(?:trial .{0,60}(?:convert|transition|become|ends?)|(?:first charge|trial conversion))", re.I)
-RENEWAL = re.compile(r"\b(?:renewal|renews? on|will (?:auto[- ])?renew|next charge|scheduled (?:charge|payment)|will be (?:charged|billed))\b", re.I)
+RENEWAL = re.compile(r"\b(?:renewal|renews? on|will (?:auto[- ]|automatically )?renew|next charge|scheduled (?:charge|payment)|will be (?:charged|billed))\b", re.I)
 PROMO = re.compile(r"\b(?:promotional|special offer|discount(?:ed|s)?|sale|shop now|offer ends|limited[- ]time)\b", re.I)
 MARKETING_CTA = re.compile(r"\b(?:shop|upgrade|subscribe|buy|save|sign up|offer|if you)\b", re.I)
 CONDITIONAL_SIGNUP = re.compile(r"\b(?:if|when|once) you (?:subscribe|sign up|upgrade|buy|purchase)\b", re.I)
 SCHEDULED_RENEWAL = re.compile(r"\b(?:scheduled|will (?:renew|be charged|be billed)|renews? on|next charge)\b", re.I)
+RECURRING = re.compile(
+    r"\b(?:auto[- ]?renew(?:s|al)?|recurring (?:charge|payment|billing)|"
+    r"(?:monthly|annual|yearly) (?:subscription|membership|billing)|"
+    r"(?:subscription|membership)\s+(?:renews?|payment|receipt|billed|suspended|paused|cancellation|will (?:automatically )?renew)|"
+    r"(?:your (?:[\w-]+ ){0,5}(?:subscription|membership))|"
+    r"(?:\d+ (?:months?|years?) (?:subscription|membership)))\b|"
+    r"\b(?:subscription|membership)\s*(?:[:(]|[.!?]?\s*$)", re.I | re.M,
+)
+ORDER = re.compile(
+    r"\b(?:order (?:confirmation|(?:is |being )?processed|(?:is )?confirmed|shipped|delivered)|"
+    r"order\s+#?\d+\s+(?:confirmation|confirmed)|shipping (?:address|confirmation))\b", re.I,
+)
+ONE_TIME = re.compile(r"\b(?:one[- ]time purchase|purchase type\s*:\s*one[- ]time)\b", re.I)
+EDITORIAL = re.compile(r"^(?:\s*(?:newsletter|digest)\b|\s*what\b.+\bmeans for\b)", re.I)
+RECEIPT_SUBJECT = re.compile(r"\b(?:your .{0,30}order receipt|order (?:receipt|confirmation)|deserves a receipt|payment deduction)\b", re.I)
+PRODUCT_LINE = re.compile(r"^\s*(?:subscription|membership|plan|item|product)\s*:\s*(.+)$", re.I | re.M)
+NAMED_NOTICE = re.compile(
+    r"^(?:your\s+trial for\s+(.+?)(?:\s+(?:will|ends?)\b|$)|"
+    r"(?:payment (?:failed|declined)|(?:failed|declined) payment) for\s+(.+?)(?:\s+(?:subscription|membership)\b|$))",
+    re.I,
+)
+TRIAL_CHARGE = re.compile(r"\b(?:convert\w*|transition\w*|become\w*|first charge|will be (?:charged|billed))\b", re.I)
 
 PLAN_PREFIX = re.compile(
     r"^(?:duplicate confirmation of (?:the same )?|(?:payment received|receipt|renewal notice|payment update|"
@@ -88,21 +111,40 @@ def _stated_date(text):
 
 
 def _subscription(message, body):
-    subject = PLAN_PREFIX.sub("", message["subject"].strip())
+    raw_subject = message["subject"].strip()
+    subject = PLAN_PREFIX.sub("", raw_subject)
     first_line = PLAN_PREFIX.sub("", body.splitlines()[0].strip())
     # Receipts and renewal notices can put references or qualifiers in the
     # subject. A recognizable plan phrase in the billing text is more stable.
-    candidates = (first_line, subject) if PLAN_IN_BODY.search(first_line) else (subject,)
+    product = PRODUCT_LINE.search(body)
+    named = NAMED_NOTICE.search(raw_subject)
+    candidates = []
+    if product:
+        candidates.append(re.split(r"\s+\(", product[1], maxsplit=1)[0])
+    if named:
+        candidates.append(named[1] or named[2])
+    if PLAN_IN_BODY.search(first_line):
+        candidates.append(first_line)
+    if not RECEIPT_SUBJECT.search(raw_subject) and not ORDER.search(raw_subject):
+        candidates.append(subject)
     for candidate in candidates:
         name = PLAN_END.split(candidate, maxsplit=1)[0].strip()
         if (
             name
             and len(name.split()) <= 7
             and re.fullmatch(r"[\w &+'-]+", name)
-            and not re.match(r"^(?:on|paid|charge|payment|receipt|failed|promo|renewal|cancellation|trial|notice|billing|we|you)\b", name, re.I)
+            and not re.match(
+                r"^(?:on|paid|charge|payment|receipt|failed|promo|renewal|cancellation|trial|notice|billing|"
+                r"subscription|membership|monthly|annual|yearly|we|you)\b", name, re.I
+            )
         ):
             return re.sub(r"[^\w]+", "-", name.casefold()).strip("-")
-    return "merchant-" + re.sub(r"[^a-z0-9]+", "-", message["sender_domain"].lower()).strip("-")
+    domain = message["sender_domain"].lower().rstrip(".")
+    if domain == "grammarly.com" or domain.endswith(".grammarly.com"):
+        return "grammarly"
+    # Generic processor receipts need separate identities until the actual plan is known.
+    source = re.sub(r"[^\w-]+", "-", message["source_id"]).strip("-")
+    return "receipt-" + source
 
 
 def _classify(clause):
@@ -118,6 +160,7 @@ def _classify(clause):
     for pattern, kind in (
         (REQUESTED, "cancellation_requested"),
         (CONFIRMED, "cancellation_confirmed"),
+        (SUSPENDED, "suspended"),
         (FAILED, "failed"),
         (TRIAL, "trial_conversion"),
         (PAYMENT, "payment"),
@@ -128,13 +171,33 @@ def _classify(clause):
     return None
 
 
+def _subscription_basis(subject, contents, kinds):
+    if ONE_TIME.search(contents):
+        return "one_time"
+    clauses = re.split(r"(?<=[.!?])\s+|[\r\n;]+", contents)
+    recurring = any(RECURRING.search(clause) and _classify(clause) != "promo" for clause in clauses)
+    if ORDER.search(contents) and not recurring:
+        return "one_time"
+    if recurring or kinds & {"trial_conversion", "cancellation_confirmed", "suspended"}:
+        return "subscription"
+    if "renewal" in kinds and not RECEIPT_SUBJECT.search(subject):
+        return "subscription"
+    return "uncertain"
+
+
 def _segments(text):
     text = re.sub(rf"\b({MONTH})\.(?=\s+\d)", r"\1", text, flags=re.I)
     clauses = re.split(r"(?<=[.!?])\s+|[\r\n;]+|,\s+(?:and\s+)?(?=(?:your\s+)?(?:next charge|renewal|will be charged)\b)", text, flags=re.I)
     grouped = []
     for clause in clauses:
         kind = _classify(clause)
-        if grouped and (not kind or kind == grouped[-1][0] and kind in {"trial_conversion", "cancellation_confirmed"}):
+        same_notice = grouped and kind == grouped[-1][0] and (
+            kind in {"trial_conversion", "cancellation_confirmed"} or (
+                kind == "payment" and not MONEY.search(" ".join(grouped[-1][1]))
+                and MONEY.search(clause)
+            )
+        )
+        if grouped and (not kind or same_notice):
             grouped[-1][1].append(clause)
         elif kind:
             grouped.append((kind, [clause]))
@@ -156,15 +219,24 @@ def extract_events(messages, *, gemini_fallback=None):
     events = {}
     fallback_evidence = {}
     for message in messages:
-        contents = "\n".join((message["subject"], message["body_text"])).strip()
-        if not contents or FAKE_INSTRUCTION.search(contents):
+        subject, body = message["subject"], message["body_text"]
+        contents = "\n".join((subject, body)).strip()
+        if not contents or EDITORIAL.search(subject) or FAKE_INSTRUCTION.search(contents):
             continue
-        key = _subscription(message, message["body_text"].strip() or contents)
-        seen = set()
         segments = [
-            (kind, evidence) for kind, evidence in (_segments(message["body_text"]) or _segments(contents))
+            (kind, evidence) for kind, evidence in (_segments(body) or _segments(contents))
             if kind != "promo"
         ]
+        kinds = {kind for kind, _ in segments}
+        subject_kind = _classify(subject)
+        if subject_kind in {"suspended", "trial_conversion", "failed", "cancellation_confirmed"} and subject_kind not in kinds:
+            segments.insert(0, (subject_kind, subject))
+            kinds.add(subject_kind)
+        basis = _subscription_basis(subject, contents, kinds)
+        if basis == "one_time":
+            continue
+        key = _subscription(message, body.strip() or contents)
+        seen = set()
         recurring = re.search(
             r"\b(?:(?:auto[- ]?renews?|renews?)\s+(?:monthly|annually|yearly)|"
             r"(?:monthly|annual|yearly)\s+(?:subscription|billing))\b", contents, re.I,
@@ -179,6 +251,8 @@ def extract_events(messages, *, gemini_fallback=None):
             if kind == "payment" and not stated:
                 stated = datetime.fromisoformat(message["received_at"].replace("Z", "+00:00")).date().isoformat()
             next_date = stated if kind in {"renewal", "trial_conversion"} else None
+            if kind == "trial_conversion" and not TRIAL_CHARGE.search(evidence):
+                next_date = None
             ref = _reference(evidence)
             identity = (kind, currency, amount, ref, stated)
             if identity in seen:
@@ -201,6 +275,8 @@ def extract_events(messages, *, gemini_fallback=None):
                 "next_charge_date": next_date,
                 "date_basis": "confirmed" if next_date else "unknown",
             }
+            if basis == "uncertain":
+                events[event_id]["subscription_basis"] = "uncertain"
             if (
                 gemini_fallback and len(segments) == 1 and kind in {"payment", "renewal", "trial_conversion"}
                 and (cycle is None or amount is None)

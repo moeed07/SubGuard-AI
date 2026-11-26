@@ -34,6 +34,30 @@ def _payment_key(event):
     return event["event_id"]
 
 
+def _split_subscription_evidence(events):
+    # Match an unlabelled copy only to an already identified payment with the
+    # same reference, plan, currency and amount. Timing alone is insufficient.
+    confirmed_payments = {
+        _payment_key(event) for event in events
+        if event["kind"] == "payment" and event["transaction_ref"]
+        and event["currency"] and event["amount_minor"] is not None
+        and event.get("subscription_basis") != "uncertain"
+    }
+    subscriptions, uncertain = [], defaultdict(list)
+    for event in events:
+        if event.get("subscription_basis") != "uncertain" or (
+            event["kind"] == "payment" and _payment_key(event) in confirmed_payments
+        ):
+            subscriptions.append(event)
+        else:
+            uncertain[event["source_id"]].append(event)
+    return subscriptions, [
+        {"source_id": source, "subscription_key": rows[0]["subscription_key"],
+         "events": rows}
+        for source, rows in sorted(uncertain.items())
+    ]
+
+
 def _round_half_up(amount):
     return int(amount + Fraction(1, 2))
 
@@ -97,6 +121,23 @@ def _estimated_renewal(plan, timeline, pending, as_of):
     return _estimate_using_receipt(plan, timeline, plan["cycle"], as_of)
 
 
+def _billing_prompt(timeline, pending, as_of):
+    has_date = any(row["date"] for row in pending)
+    cycle_known = any(event["cycle"] in {"monthly", "annual"} for event in timeline) or any(
+        row.get("cycle_basis") == "payment_history" for row in pending
+    )
+    if not cycle_known:
+        payment = next((event for event in reversed(timeline) if event["kind"] == "payment"), None)
+        return {"field": "cycle", "can_estimate_from_payment": bool(
+            not has_date and payment and any(
+                _estimate_using_receipt(payment, timeline, cycle, as_of) for cycle in ("monthly", "annual")
+            )
+        )}
+    if not has_date:
+        return {"field": "next_charge_date"}
+    return None
+
+
 def _estimate_using_receipt(plan, timeline, cycle, as_of):
     # A later copy of the same receipt must not shift the estimate.
     payment_key = _payment_key(plan)
@@ -143,7 +184,7 @@ def _estimate_from_payment_history(timeline, as_of):
 def estimate_renewal_from_selection(portfolio, subscription_key, cycle):
     """Return a display-only estimate after the user selects their billing cycle."""
     subscription = next((row for row in portfolio["subscriptions"] if row["subscription_key"] == subscription_key), None)
-    if not subscription or subscription["auto_renew"] is False or any(
+    if not subscription or subscription["auto_renew"] is False or subscription["status"] == "suspended" or any(
         row["subscription_key"] == subscription_key and row["date"] for row in portfolio["due"]
     ):
         return None
@@ -188,9 +229,11 @@ def build_portfolio(events, as_of, timezone):
     monthly = defaultdict(Fraction)
     timelines = defaultdict(list)
     subscriptions, due = [], []
+    billing_prompts = {}
     paid = set()
     unique = {event["event_id"]: event for event in events if event["kind"] != "promo"}
-    for event in sorted(unique.values(), key=lambda row: _timeline_order(row, zone)):
+    subscription_events, needs_confirmation = _split_subscription_evidence(unique.values())
+    for event in sorted(subscription_events, key=lambda row: _timeline_order(row, zone)):
         timelines[event["subscription_key"]].append(dict(event))
         if event["kind"] == "payment" and event["currency"] and event["amount_minor"] is not None:
             key = _payment_key(event)
@@ -200,7 +243,7 @@ def build_portfolio(events, as_of, timezone):
 
     for key, timeline in sorted(timelines.items()):
         stop = max(
-            (event for event in timeline if event["kind"] == "cancellation_confirmed"),
+            (event for event in timeline if event["kind"] in {"cancellation_confirmed", "suspended"}),
             key=lambda event: (_received(event), event["event_id"]),
             default=None,
         )
@@ -231,19 +274,26 @@ def build_portfolio(events, as_of, timezone):
                 recurring_price["amount_minor"], 12 if recurring_price["cycle"] == "annual" else 1
             )
         if stop and not plan:
-            status, auto_renew = "canceled", False
+            status = "suspended" if stop["kind"] == "suspended" else "canceled"
+            auto_renew = None if status == "suspended" else False
         elif cancellation_requested and not stop:
             status, auto_renew = "cancellation_requested", True if plan or renewal else None
         elif plan or renewal:
             status, auto_renew = "active", True
         elif trial:
             status, auto_renew = "trial", None
+        elif timeline[-1]["kind"] == "failed":
+            status, auto_renew = "payment_failed", None
         else:
             status, auto_renew = "unknown", None
+        if status not in {"canceled", "suspended", "cancellation_requested"}:
+            prompt = _billing_prompt(timeline, pending, as_of)
+            if prompt:
+                billing_prompts[key] = prompt
         subscriptions.append({
             "subscription_key": key,
             "status": status,
-            "paid_through": stop["effective_date"] if stop and not plan else None,
+            "paid_through": stop["effective_date"] if status == "canceled" else None,
             "auto_renew": auto_renew,
             "evidence_ids": _sources(timeline),
         })
@@ -264,6 +314,8 @@ def build_portfolio(events, as_of, timezone):
         "timezone": timezone,
         "totals": dict(sorted(totals.items())),
         "subscriptions": subscriptions,
+        "needs_confirmation": needs_confirmation,
+        "billing_prompts": billing_prompts,
         "due": sorted(due, key=lambda row: (
             row["date"] or "9999-12-31", row["subscription_key"], row["kind"], row["currency"] or ""
         )),
