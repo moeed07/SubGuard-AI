@@ -13,7 +13,7 @@ def test_shared_fixture_scans_and_idempotence():
     after = extract_events(fictional_messages(canceled=True))
     assert [(row["source_id"], row["kind"]) for row in after] == [
         ("m1", "payment"), ("m2", "payment"), ("m3", "payment"), ("m4", "renewal"),
-        ("m5", "trial_conversion"), ("m6", "promo"), ("m7", "failed"), ("m8", "cancellation_confirmed"),
+        ("m5", "trial_conversion"), ("m7", "failed"), ("m8", "cancellation_confirmed"),
     ]
     assert before == after[:-1]
     assert before[0] == {
@@ -98,3 +98,34 @@ def test_app_demo_subjects_keep_receipt_and_renewal_on_the_same_plans():
     }
     assert [row["source_id"] for row in result["timelines"]["writing-plus"]] == ["m1", "m2"]
     assert [row["source_id"] for row in result["timelines"]["design-pro"]] == ["m3", "m4", "m8"]
+
+
+def test_estimates_use_calendar_boundaries_and_only_confirmed_dues_enter_totals():
+    receipt = extract_events(fictional_messages())[0]
+    monthly = dict(receipt, event_date="2025-01-31", received_at="2025-01-31T08:00:00Z")
+    duplicate = dict(monthly, event_id="copy:0", source_id="copy",
+                     event_date="2025-02-05", received_at="2025-02-05T08:00:00Z")
+    annual = dict(monthly, event_id="annual:0", source_id="annual", subscription_key="annual",
+                  cycle="annual", event_date="2024-02-29", received_at="2024-02-29T08:00:00Z")
+    promo = dict(monthly, event_id="promo:0", source_id="promo", subscription_key="old-promo", kind="promo")
+    result = build_portfolio([duplicate, annual, promo, monthly], "2025-02-25", TIMEZONE)
+    assert [(row["subscription_key"], row["date"], row["date_basis"]) for row in result["due"]] == [
+        ("annual", "2025-02-28", "estimated"), ("writing-plus", "2025-02-28", "estimated"),
+    ]
+    assert result["due"][1]["evidence_ids"] == ["copy", "m1"]
+    assert result["totals"]["PKR"]["next_7d_minor"] == 0
+    assert "old-promo" not in result["timelines"]
+    assert build_portfolio([monthly], "2025-03-01", TIMEZONE)["due"] == []
+
+
+def test_confirmed_renewal_supersedes_estimate_and_cancellation_removes_it():
+    receipt = extract_events(fictional_messages())[0]
+    renewal = dict(receipt, event_id="renew:0", source_id="renew", kind="renewal",
+                   next_charge_date="2026-12-27", date_basis="confirmed")
+    stop = dict(receipt, event_id="stop:0", source_id="stop", kind="cancellation_confirmed",
+                received_at="2026-11-27T08:00:00Z")
+    assert [row["date"] for row in portfolio([receipt])["due"]] == ["2026-12-26"]
+    assert [(row["date"], row["date_basis"]) for row in portfolio([receipt, renewal])["due"]] == [
+        ("2026-12-27", "confirmed"),
+    ]
+    assert portfolio([receipt, stop])["due"] == []

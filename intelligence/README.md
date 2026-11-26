@@ -21,4 +21,6 @@ For the live smoke test, privately set `GOOGLE_API_KEY` for the approved Gemini 
 
 Moeed can import `extract_events(messages)`, `build_portfolio(events, as_of, timezone)`, and `await run_review(portfolio, goal=None)` from `intelligence.api`. Include `-r requirements-agent.txt` in the app's requirements. The fixture clock is 2026-11-26 in Asia/Karachi.
 
-The application saves validated open proposals by the shared stable item key. Reconcile old renewal items against confirmed cancellation in the app, since the review receives no existing item history. An optional optimizer is outside this implementation. The deterministic extractor targets explicit English billing notices, ISO dates, and currency codes. Keep unsupported or incomplete evidence out of confirmed figures. Before using new real sender templates, check their extracted evidence against the original mail.
+The application saves validated open proposals by the shared stable item key. Reconcile old renewal items against confirmed cancellation in the app, since the review receives no existing item history. An optional optimizer is outside this implementation.
+
+The extractor skips marketing-only messages and accepts ISO dates, English month names, and unambiguous slash dates. An undated payment uses its received date. For a recurring receipt without a dated renewal notice, the portfolio estimates one cycle ahead using calendar months or years. Estimated dates stay out of the confirmed forecast and cannot be used for review proposals.

@@ -1,4 +1,5 @@
 """Deterministic reconciliation for one account's validated events."""
+from calendar import monthrange
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from fractions import Fraction
@@ -90,6 +91,40 @@ def _due_entries(timeline, stop, plan, as_of):
         }
 
 
+def _estimated_renewal(plan, timeline, pending, as_of):
+    if not plan or any(row["kind"] == "renewal" and row["date"] for row in pending):
+        return None
+
+    # A later copy of the same receipt must not shift the estimate.
+    payment_key = _payment_key(plan)
+    dated_copies = [
+        event for event in timeline
+        if event["kind"] == "payment" and event["event_date"] and _payment_key(event) == payment_key
+    ]
+    if not dated_copies:
+        return None
+    anchor = min(dated_copies, key=lambda event: (_received(event), event["event_id"]))
+    paid_on = date.fromisoformat(anchor["event_date"])
+    if paid_on.isoformat() > as_of:
+        return None
+    months = 12 if plan["cycle"] == "annual" else 1
+    year, month_index = divmod(paid_on.year * 12 + paid_on.month - 1 + months, 12)
+    month = month_index + 1
+    next_date = date(year, month, min(paid_on.day, monthrange(year, month)[1])).isoformat()
+    if next_date < as_of:
+        # A stale receipt alone does not establish that further cycles occurred.
+        return None
+    return {
+        "subscription_key": plan["subscription_key"],
+        "date": next_date,
+        "amount_minor": plan["amount_minor"],
+        "currency": plan["currency"],
+        "kind": "renewal",
+        "date_basis": "estimated",
+        "evidence_ids": _sources([plan, anchor]),
+    }
+
+
 def build_portfolio(events, as_of, timezone):
     """Return the shared JSON-compatible portfolio without any network calls."""
     day = date.fromisoformat(as_of)
@@ -100,7 +135,7 @@ def build_portfolio(events, as_of, timezone):
     timelines = defaultdict(list)
     subscriptions, due = [], []
     paid = set()
-    unique = {event["event_id"]: event for event in events}
+    unique = {event["event_id"]: event for event in events if event["kind"] != "promo"}
     for event in sorted(unique.values(), key=lambda row: _timeline_order(row, zone)):
         timelines[event["subscription_key"]].append(dict(event))
         if event["kind"] == "payment" and event["currency"] and event["amount_minor"] is not None:
@@ -117,6 +152,10 @@ def build_portfolio(events, as_of, timezone):
         )
         plan = _plan_billing(timeline, stop)
         pending = list(_due_entries(timeline, stop, plan, as_of))
+        estimate = _estimated_renewal(plan, timeline, pending, as_of)
+        if estimate:
+            pending = [row for row in pending if row["kind"] != "renewal" or row["date"]]
+            pending.append(estimate)
         due.extend(pending)
         trial = any(row["kind"] == "trial_conversion" for row in pending)
         renewal = any(row["kind"] == "renewal" for row in pending)
