@@ -146,3 +146,15 @@ def test_error_from_tool_is_not_a_valid_proposal():
     agent._capture(message, trace, items)
     assert trace == [{"tool": "upsert_review_item", "outcome": "error", "evidence_ids": []}]
     assert items == []
+
+
+def test_automatic_review_without_expected_proposal_is_partial(monkeypatch):
+    async def no_proposal(path, goal, model, key, trace, items):
+        trace.append({"tool": "get_portfolio", "outcome": "ok", "evidence_ids": ["m5"]})
+        return "A trial is due."
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "fixture-placeholder")
+    monkeypatch.setattr(agent, "_run", no_proposal)
+    result = asyncio.run(run_review(snapshot()))
+    assert result["status"] == "partial"
+    assert result["items"] == []

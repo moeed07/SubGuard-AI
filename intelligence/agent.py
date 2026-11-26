@@ -1,6 +1,7 @@
 """Run Gemini against one isolated MCP snapshot."""
 import asyncio
 from contextlib import aclosing, contextmanager
+from datetime import date, timedelta
 import json
 import os
 from pathlib import Path
@@ -136,10 +137,11 @@ async def run_review(portfolio, goal=None):
 
     trace, items = [], []
     model = os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
+    review_goal = goal or DEFAULT_GOAL
     try:
         with snapshot_file(portfolio) as path:
             async with asyncio.timeout(REVIEW_TIMEOUT):
-                summary = await _run(path, goal or DEFAULT_GOAL, model, key, trace, items)
+                summary = await _run(path, review_goal, model, key, trace, items)
     except TimeoutError:
         summary = "The Gemini or MCP review timed out."
     except Exception as error:
@@ -148,8 +150,25 @@ async def run_review(portfolio, goal=None):
         summary = f"The Gemini or MCP review failed ({type(error).__name__}){hint}."
     else:
         latest_outcomes = {call["tool"]: call["outcome"] for call in trace}
-        if summary and latest_outcomes and all(outcome == "ok" for outcome in latest_outcomes.values()):
+        if (
+            summary and latest_outcomes
+            and all(outcome == "ok" for outcome in latest_outcomes.values())
+            and _trial_proposal_complete(portfolio, review_goal, items)
+        ):
             return {"status": "complete", "summary": summary, "items": items, "trace": trace}
         summary = "The review did not return a complete, verified MCP result."
 
     return {"status": "partial" if trace else "failed", "summary": summary, "items": [], "trace": trace}
+
+
+def _trial_proposal_complete(portfolio, goal, items):
+    if goal != DEFAULT_GOAL:
+        return True
+    start = portfolio["as_of"]
+    last = (date.fromisoformat(start) + timedelta(days=7)).isoformat()
+    confirmed_trial = any(
+        row["kind"] == "trial_conversion" and row["date_basis"] == "confirmed"
+        and row["date"] and start <= row["date"] <= last
+        for row in portfolio["due"]
+    )
+    return not confirmed_trial or any(item["kind"] == "trial_conversion" for item in items)

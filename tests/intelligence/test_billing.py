@@ -82,3 +82,19 @@ def test_stale_notice_or_duplicate_receipt_does_not_reactivate_canceled_plan():
     duplicate = dict(old_receipt, **later, event_id="duplicate:0", source_id="duplicate",
                      event_date="2026-11-29")
     assert portfolio(events + [stale, duplicate])["totals"]["PKR"] == portfolio(events)["totals"]["PKR"]
+
+
+def test_app_demo_subjects_keep_receipt_and_renewal_on_the_same_plans():
+    messages = fictional_messages(canceled=True)
+    messages[0]["subject"] = "Writing Plus monthly receipt W-101"
+    messages[1]["subject"] = "Duplicate confirmation: Writing Plus W-101"
+    messages[3]["subject"] = "Design Pro upcoming annual renewal"
+    messages[7]["subject"] = "Design Pro auto-renewal turned OFF"
+    events = extract_events(messages)
+    assert portfolio(events[:-1])["totals"]["PKR"]["next_7d_minor"] == 1270000
+    result = portfolio(events)
+    assert result["totals"]["PKR"] == {
+        "paid_minor": 1400000, "monthly_equivalent_minor": 200000, "next_7d_minor": 70000,
+    }
+    assert [row["source_id"] for row in result["timelines"]["writing-plus"]] == ["m1", "m2"]
+    assert [row["source_id"] for row in result["timelines"]["design-pro"]] == ["m3", "m4", "m8"]
