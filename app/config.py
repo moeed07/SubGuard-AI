@@ -22,8 +22,8 @@ class Settings:
     service_mode: str
     gemini_model: str
     google_api_key: str
-    gmail_max_pages: int = 5
-    gmail_max_messages: int = 100
+    gmail_max_pages: int = 3
+    gmail_max_messages: int = 40
 
     @property
     def is_production(self) -> bool:

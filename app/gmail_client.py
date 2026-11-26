@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import re
@@ -216,7 +217,17 @@ async def scan_gmail_messages(
                     headers=headers,
                     params={"format": "full"},
                 )
-                msg_resp.raise_for_status()
+                if msg_resp.status_code in (403, 429):
+                    await asyncio.sleep(0.5)
+                    msg_resp = await client.get(
+                        f"{GMAIL_API_BASE}/messages/{msg_id}",
+                        headers=headers,
+                        params={"format": "full"},
+                    )
+                if msg_resp.status_code >= 400:
+                    partial = True
+                    continue
+                await asyncio.sleep(0.03)
                 msg_data = msg_resp.json()
                 payload = msg_data.get("payload", {})
                 hdrs = _parse_header_map(payload.get("headers", []))
