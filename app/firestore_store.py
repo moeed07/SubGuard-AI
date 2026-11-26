@@ -287,9 +287,21 @@ class FirestoreStore:
         items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return items
 
+    def set_cycle_choice(self, account_id: str, subscription_key: str, cycle: str) -> None:
+        self._acct_ref(account_id).collection("cycle_choices").document(subscription_key).set(
+            {"subscription_key": subscription_key, "cycle": cycle, "updated_at": _utc_now_iso()}
+        )
+
+    def clear_cycle_choice(self, account_id: str, subscription_key: str) -> None:
+        self._acct_ref(account_id).collection("cycle_choices").document(subscription_key).delete()
+
+    def list_cycle_choices(self, account_id: str) -> dict[str, str]:
+        docs = self._acct_ref(account_id).collection("cycle_choices").stream()
+        return {d.id: (d.to_dict() or {}).get("cycle", "") for d in docs}
+
     def delete_account_data(self, account_id: str) -> None:
         acct = self._acct_ref(account_id)
-        for sub in ("evidence", "events", "meta", "review_items", "notifications"):
+        for sub in ("evidence", "events", "meta", "review_items", "notifications", "cycle_choices"):
             for doc in acct.collection(sub).stream():
                 doc.reference.delete()
         acct.delete()

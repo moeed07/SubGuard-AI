@@ -158,22 +158,10 @@ function renderDashboard(data) {
     dueMap.set(d.subscription_key, d);
   }
   for (const sub of portfolio.subscriptions || []) {
-    const due = dueMap.get(sub.subscription_key);
-    const timeline = (portfolio.timelines && portfolio.timelines[sub.subscription_key]) || [];
-    const lastPayment = [...timeline].reverse().find(
-      (e) => e.kind === "payment" && e.event_date && (e.cycle === "monthly" || e.cycle === "annual")
-    );
-    let estimatedHtml = "";
-    if (!due && lastPayment) {
-      const paidDate = new Date(lastPayment.event_date + "T00:00:00Z");
-      if (lastPayment.cycle === "annual") {
-        paidDate.setUTCFullYear(paidDate.getUTCFullYear() + 1);
-      } else {
-        paidDate.setUTCMonth(paidDate.getUTCMonth() + 1);
-      }
-      const estDate = paidDate.toISOString().slice(0, 10);
-      estimatedHtml = `<div class="small">Estimated next charge: <strong>${formatMoney(lastPayment.currency, lastPayment.amount_minor)}</strong> around <strong>${estDate}</strong> (from payment on ${lastPayment.event_date}) <span class="badge badge-warn">estimated</span></div>`;
-    }
+    const key = sub.subscription_key;
+    const due = dueMap.get(key);
+    const timeline = (portfolio.timelines && portfolio.timelines[key]) || [];
+    const userChoice = (data.user_estimates || {})[key];
     const sourcesHtml = (sub.evidence_ids || [])
       .map((sid) => {
         const ev = evidenceMap.get(sid);
@@ -183,53 +171,54 @@ function renderDashboard(data) {
       .join("<br/>");
     const row = document.createElement("div");
     row.className = "item-row";
-    const dueHtml = due
-      ? `<div class="small">Next charge: <strong>${formatMoney(due.currency, due.amount_minor)}</strong> on <strong>${due.date || "Date unknown"}</strong> <span class="badge">${due.date_basis}</span></div>`
-      : estimatedHtml || `<div class="small muted">No upcoming charge scheduled</div>`;
+
+    let dueHtml;
+    if (due && due.date) {
+      const basisNote = due.cycle_basis === "payment_history" ? " (from payment history)" : "";
+      dueHtml = `<div class="small">Next charge: <strong>${formatMoney(due.currency, due.amount_minor)}</strong> on <strong>${due.date}</strong> <span class="badge ${due.date_basis === "confirmed" ? "badge-ok" : "badge-warn"}">${due.date_basis}${basisNote}</span></div>`;
+    } else if (userChoice && userChoice.estimate && userChoice.estimate.date) {
+      const e = userChoice.estimate;
+      const amount = e.amount_minor === null || e.amount_minor === undefined ? "Amount unknown" : formatMoney(e.currency, e.amount_minor);
+      dueHtml = `<div class="small">Next charge: <strong>${amount}</strong> on <strong>${e.date}</strong> <span class="badge badge-warn">estimated (you chose ${userChoice.cycle})</span></div>`;
+    } else if (userChoice) {
+      dueHtml = `<div class="small muted">You chose <strong>${userChoice.cycle}</strong>, but no dated payment was found to calculate the next date.</div>`;
+    } else {
+      dueHtml = `<div class="small muted">Next charge date unknown</div>`;
+    }
+
     const remindHtml =
       due && due.date_basis === "confirmed"
         ? `<div class="cta-row">
-             <button class="btn btn-small btn-secondary" onclick="scheduleReminder('${sub.subscription_key}', 'default')">Remind me (day before 09:00)</button>
-             <button class="btn btn-small btn-primary" onclick="scheduleReminder('${sub.subscription_key}', 'one_minute')">Test reminder (1 min)</button>
+             <button class="btn btn-small btn-secondary" onclick="scheduleReminder('${key}', 'default')">Remind me (day before 09:00)</button>
+             <button class="btn btn-small btn-primary" onclick="scheduleReminder('${key}', 'one_minute')">Test reminder (1 min)</button>
            </div>`
         : "";
-    const hasUnknownDate = !due || !due.date;
-    const canEstimateCycle =
-      hasUnknownDate &&
-      timeline.some((e) => e.kind === "payment" && e.cycle === null && e.amount_minor !== null);
-    const estimateButtonsHtml = canEstimateCycle
-      ? `<button class="btn btn-small btn-secondary" onclick="selectCycleEstimate('${sub.subscription_key}', 'monthly')">Monthly</button>
-         <button class="btn btn-small btn-secondary" onclick="selectCycleEstimate('${sub.subscription_key}', 'annual')">Annual</button>`
-      : "";
-    const lookupHtml = hasUnknownDate
-      ? `<div class="lookup-box" style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
-           <div class="small muted">Billing period/date unknown. Look up public terms${canEstimateCycle ? " or choose a cycle to estimate" : ""}:</div>
+
+    const hasPayment = timeline.some((e) => e.kind === "payment");
+    const cycleKnown = timeline.some((e) => e.cycle === "monthly" || e.cycle === "annual");
+    const askCycle = hasPayment && !cycleKnown && !(due && due.date && due.cycle_basis !== "user_selected");
+    const chosen = userChoice ? userChoice.cycle : "";
+    const cycleHtml = askCycle
+      ? `<div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
+           <div class="small muted">The email doesn't say how often this renews. Is it monthly or yearly?</div>
            <div class="cta-row" style="margin-top:6px;">
-             <input type="text" id="lp-product-${sub.subscription_key}" value="${sub.subscription_key.replace(/-/g, " ")}" placeholder="Product" class="btn btn-small" style="font-weight:400;" />
-             <input type="text" id="lp-plan-${sub.subscription_key}" value="Standard" placeholder="Plan" class="btn btn-small" style="font-weight:400;" />
-             <select id="lp-store-${sub.subscription_key}" class="btn btn-small">
-               <option value="google-play">Google Play</option>
-               <option value="app-store">App Store</option>
-               <option value="provider">Provider</option>
-             </select>
-             <input type="text" id="lp-market-${sub.subscription_key}" value="PK" maxlength="2" style="width:48px;" class="btn btn-small" />
-             <button class="btn btn-small btn-secondary" onclick="lookupPlan('${sub.subscription_key}')">Look up billing period</button>
-             ${estimateButtonsHtml}
+             <button class="btn btn-small ${chosen === "monthly" ? "btn-primary" : "btn-secondary"}" onclick="saveCycleChoice('${key}', 'monthly')">Monthly</button>
+             <button class="btn btn-small ${chosen === "annual" ? "btn-primary" : "btn-secondary"}" onclick="saveCycleChoice('${key}', 'annual')">Annual</button>
+             ${chosen ? `<button class="btn btn-small btn-secondary" onclick="saveCycleChoice('${key}', 'clear')">Clear</button>` : ""}
            </div>
-           <div id="lp-result-${sub.subscription_key}" class="small" style="margin-top:6px;"></div>
-           <div id="est-result-${sub.subscription_key}" class="small" style="margin-top:4px;"></div>
          </div>`
       : "";
+
     row.innerHTML = `
       <div class="item-head">
-        <strong>${sub.subscription_key}</strong>
+        <strong>${key}</strong>
         <span class="badge">${sub.status || "unknown"}</span>
       </div>
       <div class="small muted">Auto-renew: ${sub.auto_renew === null ? "Unknown" : sub.auto_renew} · Paid through: ${sub.paid_through || "—"}</div>
       ${dueHtml}
       <div class="small muted" style="margin-top:4px;">Source: ${sourcesHtml || "—"}</div>
       ${remindHtml}
-      ${lookupHtml}
+      ${cycleHtml}
     `;
     subsList.appendChild(row);
   }
@@ -258,53 +247,17 @@ async function loadDashboard() {
   }
 }
 
-async function lookupPlan(subscriptionKey) {
-  const out = document.getElementById(`lp-result-${subscriptionKey}`);
-  out.textContent = "Looking up public plan terms...";
+async function saveCycleChoice(subscriptionKey, cycle) {
+  clearAlert();
   try {
-    const res = await apiFetch("/api/plan-lookup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        subscription_key: subscriptionKey,
-        product: document.getElementById(`lp-product-${subscriptionKey}`).value,
-        plan: document.getElementById(`lp-plan-${subscriptionKey}`).value,
-        storefront: document.getElementById(`lp-store-${subscriptionKey}`).value,
-        market: document.getElementById(`lp-market-${subscriptionKey}`).value,
-      }),
-    });
-    if (res.status !== "complete") {
-      out.textContent = `Public lookup ${res.status}.`;
-      return;
-    }
-    const textParts = (res.content || []).map((b) => b.text || "").filter(Boolean).join(" ");
-    const citations = [];
-    for (const b of res.content || []) {
-      for (const ann of b.annotations || []) {
-        if (ann.type === "url_citation" && ann.url) {
-          citations.push(`<a href="${ann.url}" target="_blank" rel="noopener noreferrer">${ann.title || ann.url}</a>`);
-        }
-      }
-    }
-    const suggestions = (res.search_suggestions || []).join(" ");
-    out.innerHTML = `<div>${textParts}</div>${citations.length ? `<div>Sources: ${citations.join(" · ")}</div>` : ""}${suggestions ? `<div class="muted">${suggestions}</div>` : ""}`;
-  } catch (err) {
-    out.textContent = err.message;
-  }
-}
-
-async function selectCycleEstimate(subscriptionKey, cycle) {
-  const out = document.getElementById(`est-result-${subscriptionKey}`);
-  try {
-    const res = await apiFetch("/api/plan-cycle-estimate", {
+    await apiFetch("/api/cycle-choice", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ subscription_key: subscriptionKey, cycle }),
     });
-    const e = res.estimate;
-    out.innerHTML = `Estimated next charge (${cycle}): <strong>${formatMoney(e.currency, e.amount_minor)}</strong> on <strong>${e.date}</strong> <span class="badge badge-warn">${e.date_basis}</span>`;
+    await loadDashboard();
   } catch (err) {
-    out.textContent = err.message;
+    showAlert(err.message);
   }
 }
 

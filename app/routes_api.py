@@ -146,6 +146,7 @@ async def get_dashboard(request: Request) -> Response:
         }
         for e in store.list_evidence(account_id)
     ]
+    user_estimates = _user_cycle_estimates(store, account_id, portfolio)
 
     return JSONResponse(
         {
@@ -164,8 +165,35 @@ async def get_dashboard(request: Request) -> Response:
             "reminders": reminders,
             "notifications": notifications,
             "evidence": evidence,
+            "user_estimates": user_estimates,
         }
     )
+
+
+def _user_cycle_estimates(
+    store: LocalStore, account_id: str, portfolio: Optional[dict[str, Any]]
+) -> dict[str, Any]:
+    """Re-apply each saved Monthly/Annual choice through Ahmed's estimate function."""
+    choices = store.list_cycle_choices(account_id)
+    if not choices or not portfolio:
+        return {}
+    try:
+        from intelligence.api import estimate_renewal_from_selection  # type: ignore
+    except ImportError:
+        estimate_renewal_from_selection = None
+    known = {s.get("subscription_key") for s in portfolio.get("subscriptions", [])}
+    result: dict[str, Any] = {}
+    for sub_key, cycle in choices.items():
+        if sub_key not in known:
+            continue
+        estimate = None
+        if estimate_renewal_from_selection is not None:
+            try:
+                estimate = estimate_renewal_from_selection(portfolio, sub_key, cycle)
+            except Exception:
+                estimate = None
+        result[sub_key] = {"cycle": cycle, "estimate": estimate}
+    return result
 
 
 @router.post("/api/refresh")
@@ -357,45 +385,31 @@ async def get_evidence_link(source_id: str, request: Request) -> Response:
     return RedirectResponse(url=f"https://mail.google.com/mail/u/0/#all/{msg_id}", status_code=302)
 
 
-@router.post("/api/plan-lookup")
-async def public_plan_lookup(request: Request, body: dict[str, Any] = Body(...)) -> Response:
-    _, err = _require_auth_and_csrf(request)
-    if err:
-        return err
-
-    from intelligence.api import lookup_public_plan  # type: ignore
-
-    result = await lookup_public_plan(
-        product=(body.get("product") or "").strip(),
-        plan=(body.get("plan") or "").strip(),
-        storefront=(body.get("storefront") or "provider").strip(),
-        market=(body.get("market") or "PK").strip(),
-    )
-    return JSONResponse(result)
-
-
-@router.post("/api/plan-cycle-estimate")
-async def plan_cycle_estimate(request: Request, body: dict[str, Any] = Body(...)) -> Response:
+@router.post("/api/cycle-choice")
+async def save_cycle_choice(request: Request, body: dict[str, Any] = Body(...)) -> Response:
+    """Persist the user's Monthly/Annual answer for a subscription whose cycle is unknown."""
     payload, err = _require_auth_and_csrf(request)
     if err:
         return err
 
     store: LocalStore = request.app.state.store
-    portfolio = store.get_portfolio(payload["aid"])
+    account_id = payload["aid"]
+    portfolio = store.get_portfolio(account_id)
     if not portfolio:
         return JSONResponse({"detail": "No active portfolio found"}, status_code=400)
 
     sub_key = (body.get("subscription_key") or "").strip()
+    known = {s.get("subscription_key") for s in portfolio.get("subscriptions", [])}
+    if sub_key not in known:
+        return JSONResponse({"detail": "Unknown subscription"}, status_code=404)
+
     cycle = (body.get("cycle") or "").strip().lower()
+    if cycle == "clear":
+        store.clear_cycle_choice(account_id, sub_key)
+        return JSONResponse({"ok": True, "cleared": True})
     if cycle not in ("monthly", "annual"):
         return JSONResponse({"detail": "Cycle must be monthly or annual"}, status_code=400)
 
-    from intelligence.api import estimate_renewal_from_selection  # type: ignore
-
-    estimate = estimate_renewal_from_selection(portfolio, sub_key, cycle)
-    if not estimate:
-        return JSONResponse(
-            {"detail": "Cannot estimate renewal for this subscription (missing dated payment or cycle already known)."},
-            status_code=400,
-        )
-    return JSONResponse({"ok": True, "estimate": estimate})
+    store.set_cycle_choice(account_id, sub_key, cycle)
+    entry = _user_cycle_estimates(store, account_id, portfolio).get(sub_key, {"cycle": cycle, "estimate": None})
+    return JSONResponse({"ok": True, **entry})

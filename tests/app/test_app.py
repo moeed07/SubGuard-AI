@@ -353,8 +353,7 @@ def test_demo_fixture_reminders_worker_and_isolation() -> None:
     assert client.get("/api/dashboard").json()["connected"] is False
 
 
-def test_plan_lookup_and_cycle_estimate_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SUBGUARD_PUBLIC_PLAN_LOOKUP", "false")
+def test_user_cycle_choice_is_saved_and_estimated() -> None:
     store = LocalStore(":memory:")
     app = create_app(settings=_test_settings(), store=store, intelligence=_mock_intelligence())
     client = TestClient(app)
@@ -403,23 +402,47 @@ def test_plan_lookup_and_cycle_estimate_endpoints(monkeypatch: pytest.MonkeyPatc
     csrf = app.state.security.create_csrf_token("sid1")
     client.cookies.set(app.state.security.SESSION_COOKIE_NAME, token)
 
-    # Plan lookup returns disabled when SUBGUARD_PUBLIC_PLAN_LOOKUP is not enabled
-    lp = client.post(
-        "/api/plan-lookup",
-        headers={"X-CSRF-Token": csrf},
-        json={"subscription_key": "google-play-order", "product": "Google Play", "plan": "Standard", "storefront": "google-play", "market": "PK"},
-    )
-    assert lp.status_code == 200
-    assert lp.json()["status"] == "disabled"
+    # Public lookup route was removed from the app
+    lp = client.post("/api/plan-lookup", headers={"X-CSRF-Token": csrf}, json={})
+    assert lp.status_code in (404, 405)
 
-    # Choose monthly -> returns estimated date 1 calendar month later, leaves totals/reminders untouched
+    # User says "monthly" -> saved, estimated date 1 calendar month after receipt
     est = client.post(
-        "/api/plan-cycle-estimate",
+        "/api/cycle-choice",
         headers={"X-CSRF-Token": csrf},
         json={"subscription_key": "google-play-order", "cycle": "monthly"},
     )
     assert est.status_code == 200
+    assert est.json()["cycle"] == "monthly"
     assert est.json()["estimate"]["date"] == "2026-12-26"
     assert est.json()["estimate"]["date_basis"] == "estimated"
+
+    # Choice survives a dashboard reload; totals and reminders untouched
+    dash = client.get("/api/dashboard").json()
+    assert dash["user_estimates"]["google-play-order"]["estimate"]["date"] == "2026-12-26"
     assert store.get_portfolio(acct)["totals"]["PKR"]["next_7d_minor"] == 0
     assert store.list_reminders(acct) == []
+
+    # Switching to annual recalculates; invalid inputs rejected; clear removes it
+    ann = client.post(
+        "/api/cycle-choice",
+        headers={"X-CSRF-Token": csrf},
+        json={"subscription_key": "google-play-order", "cycle": "annual"},
+    )
+    assert ann.json()["estimate"]["date"] == "2027-11-26"
+    assert client.post(
+        "/api/cycle-choice", headers={"X-CSRF-Token": csrf},
+        json={"subscription_key": "google-play-order", "cycle": "weekly"},
+    ).status_code == 400
+    assert client.post(
+        "/api/cycle-choice", headers={"X-CSRF-Token": csrf},
+        json={"subscription_key": "not-mine", "cycle": "monthly"},
+    ).status_code == 404
+    assert client.post(
+        "/api/cycle-choice", json={"subscription_key": "google-play-order", "cycle": "monthly"},
+    ).status_code == 403
+    client.post(
+        "/api/cycle-choice", headers={"X-CSRF-Token": csrf},
+        json={"subscription_key": "google-play-order", "cycle": "clear"},
+    )
+    assert client.get("/api/dashboard").json()["user_estimates"] == {}

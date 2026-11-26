@@ -110,6 +110,13 @@ class LocalStore:
                     message TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS cycle_choices (
+                    account_id TEXT NOT NULL,
+                    subscription_key TEXT NOT NULL,
+                    cycle TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (account_id, subscription_key)
+                );
                 """
             )
             self._conn.commit()
@@ -554,9 +561,40 @@ class LocalStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def set_cycle_choice(self, account_id: str, subscription_key: str, cycle: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO cycle_choices (account_id, subscription_key, cycle, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(account_id, subscription_key) DO UPDATE SET
+                    cycle = excluded.cycle,
+                    updated_at = excluded.updated_at
+                """,
+                (account_id, subscription_key, cycle, utc_now_iso()),
+            )
+            self._conn.commit()
+
+    def clear_cycle_choice(self, account_id: str, subscription_key: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM cycle_choices WHERE account_id = ? AND subscription_key = ?",
+                (account_id, subscription_key),
+            )
+            self._conn.commit()
+
+    def list_cycle_choices(self, account_id: str) -> dict[str, str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT subscription_key, cycle FROM cycle_choices WHERE account_id = ?",
+                (account_id,),
+            ).fetchall()
+            return {r["subscription_key"]: r["cycle"] for r in rows}
+
     def delete_account_data(self, account_id: str) -> None:
         with self._lock:
             for table in (
+                "cycle_choices",
                 "notifications",
                 "reminder_jobs",
                 "review_items",
