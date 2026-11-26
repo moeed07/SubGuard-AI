@@ -353,7 +353,8 @@ def test_demo_fixture_reminders_worker_and_isolation() -> None:
     assert client.get("/api/dashboard").json()["connected"] is False
 
 
-def test_plan_lookup_and_cycle_estimate_endpoints() -> None:
+def test_plan_lookup_and_cycle_estimate_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUBGUARD_PUBLIC_PLAN_LOOKUP", "false")
     store = LocalStore(":memory:")
     app = create_app(settings=_test_settings(), store=store, intelligence=_mock_intelligence())
     client = TestClient(app)
