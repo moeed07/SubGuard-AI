@@ -25,6 +25,10 @@ can_propose_review=true. Copy subscription_key, kind, exact YYYY-MM-DD date (as
 target_date), and evidence_ids verbatim. Use state "open". If there is no eligible row,
 describe the evidence without proposing a review. Label estimated dates as estimates.
 Only use that tool for the default review or if the user explicitly asks for a proposal.
+For an explicit question about keeping features at the lowest cost, use
+optimize_subscription_features when available. Call it without a feature filter for all
+listed features. State that any savings depend on the supplied catalog, and disclose
+missing prices or features. A candidate removal is a what-if, never a cancellation.
 Quote amounts exactly as returned by the tools, including the currency and punctuation.
 Distinguish proposals from saved items.
 Cite opaque source IDs in concise plain text.
@@ -94,7 +98,7 @@ async def _run(path, goal, model, key, trace, items, reviewable):
     from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
     from google.genai import types
 
-    tools = ["get_portfolio", "get_subscription_events"]
+    tools = ["get_portfolio", "get_subscription_events", "optimize_subscription_features"]
     if reviewable:
         tools.append("upsert_review_item")
 
