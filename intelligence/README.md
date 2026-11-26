@@ -21,7 +21,7 @@ For the live smoke test, privately set `GOOGLE_API_KEY` for the approved Gemini 
 
 Moeed can import `extract_events(messages)`, `build_portfolio(events, as_of, timezone)`, and `await run_review(portfolio, goal=None)` from `intelligence.api`. Include `-r requirements-agent.txt` in the app's requirements. The fixture clock is 2026-11-26 in Asia/Karachi.
 
-The application saves validated open proposals by the shared stable item key. Reconcile old renewal items against confirmed cancellation in the app, since the review receives no existing item history. An optional optimizer is outside this implementation.
+The application saves validated open proposals by the shared stable item key. Reconcile old renewal items against confirmed cancellation in the app, since the review receives no existing item history.
 
 The extractor skips marketing-only messages and accepts ISO dates, English month names, and unambiguous slash dates. An undated payment uses its received date. For a recurring receipt without a dated renewal notice, the portfolio estimates one cycle ahead using calendar months or years. Estimated dates stay out of the confirmed forecast and cannot be used for review proposals.
 
@@ -34,3 +34,11 @@ Extraction keeps its synchronous interface. When the fallback is enabled, async 
 The optional **Look up billing period** action uses `await lookup_public_plan(product=..., plan=..., storefront=..., market=...)` from `intelligence.api`. Pass only the public product and plan names, the storefront (`google-play`, `app-store`, or `provider`), and a two-letter market. Set `SUBGUARD_PUBLIC_PLAN_LOOKUP=true` only after the team approves a billing-enabled Gemini project. This feature shares `GEMINI_MODEL` and the private API key with the rest of the agent.
 
 Call this from an explicit user action. Display its original `content` with annotations alongside the associated `search_suggestions` in the requesting user's view, following [Google's Search grounding terms](https://aistudio.google.com/docs/terms#grounding-with-google-search). Keep the lookup response out of storage and the billing calculation. If the user selects monthly or annual, call `estimate_renewal_from_selection(portfolio, subscription_key, cycle)` to calculate an estimated date from the receipt already on file. The helper returns `None` when there is a known due date, a cancellation, or insufficient receipt evidence. It does not change stored totals or create a reminder.
+
+### Optional feature optimizer
+
+Call `optimize_portfolio(plans, capabilities=None)` from `intelligence.api` to compare verified active plans. Each plan has `plan_id`, `currency`, `monthly_cost_minor` (an integer), and `features` (a list of stable feature IDs). Add `protected=True` for a plan that must stay. Use `None` for an unknown currency, price, or feature list. The app should match plan IDs to a verified catalog before calling this function; receipt text and Gemini are not a source of catalog features.
+
+The optimizer searches up to 16 selectable plans per currency, preserving all known features by default. An explicit capability list is required independently in each currency group. With missing data, affected plans are retained and the output discloses the missing fields and withholds full group savings. Amounts from different currencies are never added together.
+
+Run `python -m intelligence.optimizer_demo` for both fictional examples. Add `--live` to test that Gemini selects `optimize_subscription_features` over real stdio MCP. The tool is available only when the backend supplies a trusted `optimizer_plans` list in the account snapshot. Treat reductions and removals as what-if results based on the supplied catalog.

@@ -7,6 +7,7 @@ from babel.numbers import get_currency_precision
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
+from .optimizer import optimize_portfolio
 from .review_rules import reviewable_charges
 
 
@@ -105,6 +106,24 @@ def create_server(portfolio):
             },
             "evidence_ids": sources,
         })
+
+    optimizer_plans = portfolio.get("optimizer_plans")
+    if isinstance(optimizer_plans, list) and optimizer_plans:
+        @server.tool()
+        def optimize_subscription_features(capabilities: list[str] | None = None) -> CallToolResult:
+            """Compare verified active plans in a what-if without changing subscriptions.
+
+            Omit capabilities to preserve every listed feature in each currency.
+            Supply exact feature IDs only if the user specifies a subset to preserve.
+            """
+            try:
+                result = optimize_portfolio(optimizer_plans, capabilities)
+            except ValueError as error:
+                return _response({"error": str(error), "evidence_ids": []})
+            for currency, group in result["currencies"].items():
+                for field in ("current_monthly", "minimum_monthly", "monthly_reduction"):
+                    group[field] = _display_amount(currency, group.pop(field + "_minor"))
+            return _response(dict(result, evidence_ids=[]))
 
     return server
 
