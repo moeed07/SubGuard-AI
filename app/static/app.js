@@ -478,8 +478,13 @@ document.getElementById("btn-find-savings").addEventListener("click", async () =
 });
 
 const params = new URLSearchParams(window.location.search);
-if (params.get("auth_error")) {
-  showAlert(`Gmail connection did not complete (${params.get("auth_error")}). You can retry anytime.`);
+const initialAuthError = params.get("auth_error");
+if (initialAuthError) {
+  window.history.replaceState({}, "", "/");
 }
 
-loadDashboard();
+loadDashboard().then(() => {
+  if (initialAuthError && document.getElementById("dashboard-view").classList.contains("hidden")) {
+    showAlert(`Gmail connection did not complete (${initialAuthError}). You can retry anytime.`);
+  }
+});
