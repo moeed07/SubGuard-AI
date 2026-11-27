@@ -15,6 +15,30 @@ REMINDER_LABELS = {
 }
 
 
+def build_reminder_message(
+    from_email: str,
+    to_email: str,
+    subscription_key: str,
+    target_date: str,
+    reminder_type: str,
+) -> EmailMessage:
+    """Build a reminder email with concise SubGuard-AI subject and full details in the body."""
+    label = REMINDER_LABELS.get(reminder_type, reminder_type)
+    msg = EmailMessage()
+    msg["Subject"] = f"SubGuard-AI: {subscription_key}"
+    msg["From"] = from_email
+    msg["To"] = to_email
+    msg.set_content(
+        f"Hello,\n\n"
+        f"This is your automated SubGuard-AI reminder ({label}).\n\n"
+        f"Subscription: {subscription_key}\n"
+        f"Upcoming charge / renewal date: {target_date}\n\n"
+        f"If you no longer wish to continue this subscription, please cancel it before {target_date}.\n\n"
+        f"— SubGuard-AI\n"
+    )
+    return msg
+
+
 def send_reminder_email(
     settings: Settings,
     to_email: str,
@@ -26,18 +50,12 @@ def send_reminder_email(
     if not settings.smtp_configured or not to_email or "@" not in to_email:
         return False
 
-    label = REMINDER_LABELS.get(reminder_type, reminder_type)
-    msg = EmailMessage()
-    msg["Subject"] = f"SubGuard AI Reminder: {subscription_key} charge on {target_date} ({label})"
-    msg["From"] = settings.smtp_email
-    msg["To"] = to_email
-    msg.set_content(
-        f"Hello,\n\n"
-        f"This is your automated SubGuard AI reminder ({label}).\n\n"
-        f"Subscription: {subscription_key}\n"
-        f"Upcoming charge / renewal date: {target_date}\n\n"
-        f"If you no longer wish to continue this subscription, please cancel it before {target_date}.\n\n"
-        f"— SubGuard AI\n"
+    msg = build_reminder_message(
+        from_email=settings.smtp_email,
+        to_email=to_email,
+        subscription_key=subscription_key,
+        target_date=target_date,
+        reminder_type=reminder_type,
     )
 
     try:

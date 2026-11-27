@@ -521,6 +521,12 @@ def test_auto_5d_1d_reminders_and_email_delivery(monkeypatch: pytest.MonkeyPatch
     assert delivered2 == 1
     assert len(sent_emails) == 3
 
+    from app.mailer import build_reminder_message
+    msg = build_reminder_message("sender@example.com", "student@example.com", "writing-plus", future_date, "five_days")
+    assert msg["Subject"] == "SubGuard-AI: writing-plus"
+    assert future_date in msg.get_content()
+    assert "5 days before renewal" in msg.get_content()
+
 
 def test_subscription_basis_reprocess_and_confirm_endpoint() -> None:
     from intelligence.api import build_portfolio
