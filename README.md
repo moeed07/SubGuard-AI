@@ -23,7 +23,12 @@
    ```powershell
    .\.venv\Scripts\python.exe -m pytest -q
    ```
-4. Start the local server:
+4. Build the React frontend with Node.js 22.12+:
+   ```powershell
+   npm.cmd --prefix app/frontend ci
+   npm.cmd --prefix app/frontend run build
+   ```
+5. Start the local server:
    ```powershell
    .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
    ```
@@ -51,7 +56,8 @@
 
 ## Verified Test Results
 - `.\.venv\Scripts\python.exe -m pip check` → `No broken requirements found.`
-- `.\.venv\Scripts\python.exe -m pytest tests/app tests/intelligence -q` → `69 passed` (`19.24s`)
+- `.\.venv\Scripts\python.exe -m pytest tests/app tests/intelligence -q` → `71 passed` (`19.68s`)
+- `npm --prefix app/frontend test` → `3 passed` (React/portfolio unit tests; Vite production bundle built into `app/frontend/dist/`)
 - Live MCP optimizer check (`intelligence.optimizer_demo --live`) → `status: complete`, `optimize_subscription_features: ok`, keeps plans `A` and `C` (`PKR 9,000` → `PKR 4,500`).
 
 ## Deployment

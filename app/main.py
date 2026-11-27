@@ -21,6 +21,7 @@ from app.security import SecurityManager
 from app.storage import LocalStore
 
 STATIC_DIR = Path(__file__).parent / "static"
+FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
 
 
 def create_app(
@@ -76,12 +77,17 @@ def create_app(
     else:
         app.include_router(auth_router)
         app.include_router(api_router)
+        frontend_index = FRONTEND_DIR / "index.html"
+        frontend_built = frontend_index.is_file()
+        if frontend_built:
+            app.mount("/static/frontend", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend_assets")
         if STATIC_DIR.exists():
             app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
         @app.get("/")
         async def index() -> FileResponse:
-            return FileResponse(str(STATIC_DIR / "index.html"))
+            page = frontend_index if frontend_built else STATIC_DIR / "index.html"
+            return FileResponse(str(page), headers={"Cache-Control": "no-store"})
 
     return app
 
