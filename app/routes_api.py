@@ -12,7 +12,7 @@ from fastapi import APIRouter, Body, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.config import Settings
-from app.gmail_client import ScanOutput, revoke_google_token, scan_gmail_messages
+from app.gmail_client import ScanOutput, fetch_gmail_profile, revoke_google_token, scan_gmail_messages
 from app.intelligence_adapter import (
     IntelligenceUnavailableError,
     auto_schedule_5d_and_1d_reminders,
@@ -125,16 +125,21 @@ def deliver_due_jobs_with_email(app: Any, now_iso: Optional[str] = None) -> int:
     def _on_deliver(job: dict[str, Any]) -> None:
         acct = store.get_account(job["account_id"])
         if not acct or not acct.get("encrypted_email"):
+            print(f"[SubGuard SMTP skipped] No email saved for account {job['account_id']}; reconnect Gmail.")
             return
         to_email = security.decrypt_token(acct["encrypted_email"])
         if to_email:
-            send_reminder_email(
+            ok = send_reminder_email(
                 settings=settings,
                 to_email=to_email,
                 subscription_key=job["subscription_key"],
                 target_date=job["target_date"],
                 reminder_type=job["reminder_type"],
             )
+            if ok:
+                print(f"[SubGuard SMTP sent] {job['reminder_type']} reminder sent for {job['subscription_key']}")
+            elif not settings.smtp_configured:
+                print("[SubGuard SMTP skipped] SMTP_EMAIL or SMTP_APP_PASSWORD is missing in .env")
 
     return store.deliver_due_jobs(now_iso=now_iso, on_deliver=_on_deliver)
 
@@ -271,6 +276,14 @@ async def refresh_scan(request: Request, body: Optional[dict[str, Any]] = Body(d
                 {"detail": "Gmail session expired. Please reconnect Gmail.", "reconnect_required": True},
                 status_code=401,
             )
+        if not acct.get("encrypted_email"):
+            try:
+                profile = await fetch_gmail_profile(access_token)
+                email = profile.get("emailAddress", "")
+                if email:
+                    store.upsert_account(account_id, encrypted_email=security.encrypt_token(email))
+            except Exception:
+                pass
         existing_portfolio = store.get_portfolio(account_id)
         needs_reprocess = (
             bool((body or {}).get("reprocess", False))
