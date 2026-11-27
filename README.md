@@ -51,7 +51,8 @@
 
 ## Verified Test Results
 - `.\.venv\Scripts\python.exe -m pip check` → `No broken requirements found.`
-- `.\.venv\Scripts\python.exe -m pytest tests/app tests/intelligence -q` → `59 passed` (`23.09s`)
+- `.\.venv\Scripts\python.exe -m pytest tests/app tests/intelligence -q` → `67 passed` (`19.28s`)
+- Live MCP optimizer check (`intelligence.optimizer_demo --live`) → `status: complete`, `optimize_subscription_features: ok`, keeps plans `A` and `C` (`PKR 9,000` → `PKR 4,500`).
 
 ## Deployment
 See [deploy/README.md](deploy/README.md) for Cloud Run (`subguard-web` and `subguard-worker`), Secret Manager, Firestore, and Cloud Scheduler OIDC setup.

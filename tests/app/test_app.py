@@ -615,3 +615,41 @@ def test_subscription_basis_reprocess_and_confirm_endpoint() -> None:
     dash = client.get("/api/dashboard").json()
     assert dash["portfolio"]["needs_confirmation"] == []
     assert [s["subscription_key"] for s in dash["portfolio"]["subscriptions"]] == ["bank-charge"]
+
+
+def test_find_savings_optimizer_endpoint() -> None:
+    store = LocalStore(":memory:")
+
+    async def _mock_opt_review(snapshot: dict[str, Any], goal: str) -> dict[str, Any]:
+        assert len(snapshot.get("optimizer_plans", [])) == 4
+        return {
+            "status": "complete",
+            "summary": "Keep plans A and C (PKR 4,500/mo instead of PKR 9,000/mo) to preserve coding, design, and writing.",
+            "items": [],
+            "trace": [{"tool": "optimize_subscription_features", "outcome": "ok", "evidence_ids": []}],
+        }
+
+    base = _mock_intelligence()
+    mock_intel = IntelligenceBackend(
+        extract_events=base.extract_events,
+        build_portfolio=base.build_portfolio,
+        run_review=_mock_opt_review,
+    )
+    app = create_app(settings=_test_settings(), store=store, intelligence=mock_intel)
+    client = TestClient(app)
+
+    client.post("/demo/start")
+    dash = client.get("/api/dashboard").json()
+    csrf = dash["csrf_token"]
+
+    assert client.post("/api/optimize-demo").status_code == 403
+    opt_resp = client.post("/api/optimize-demo", headers={"X-CSRF-Token": csrf})
+    assert opt_resp.status_code == 200
+    body = opt_resp.json()
+    pkr = body["optimization"]["currencies"]["PKR"]
+    assert pkr["retained_plan_ids"] == ["A", "C"]
+    assert pkr["retained_features"] == ["coding", "design", "writing"]
+    assert pkr["current_monthly_minor"] == 900000
+    assert pkr["minimum_monthly_minor"] == 450000
+    assert pkr["monthly_reduction_minor"] == 450000
+    assert body["review"]["trace"][0]["tool"] == "optimize_subscription_features"
