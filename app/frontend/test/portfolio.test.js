@@ -1,0 +1,38 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { confirmedWindow, money, subscriptionRows } from '../src/portfolio.js';
+
+test('money uses the currency exponent and visibly separates unknown and zero', () => {
+  assert.equal(money('PKR', 1_270_000), 'PKR 12,700');
+  assert.equal(money('PKR', 0), 'PKR 0');
+  assert.equal(money('PKR', null), 'Amount unknown');
+  assert.equal(money('JPY', 251), 'JPY 251');
+  assert.equal(money('KWD', 1005), 'KWD 1.005');
+});
+
+test('the rail includes today and day seven without mixing estimates or distant charges', () => {
+  const due = [
+    { date: '2026-11-26', date_basis: 'confirmed', currency: 'PKR' },
+    { date: '2026-11-29', date_basis: 'estimated', currency: 'PKR' },
+    { date: '2026-12-03', date_basis: 'confirmed', currency: 'USD' },
+    { date: '2026-12-04', date_basis: 'confirmed', currency: 'PKR' },
+  ];
+  const days = confirmedWindow({ as_of: '2026-11-26', due });
+  assert.equal(days.length, 8);
+  assert.deepEqual(days[0], [due[0]]);
+  assert.deepEqual(days[7], [due[2]]);
+  assert.equal(days.flat().length, 2);
+});
+
+test('a saved estimate cannot revive a canceled renewal or replace a confirmed charge', () => {
+  const estimate = { date: '2026-11-29', date_basis: 'estimated' };
+  const confirmed = { date: '2026-12-01', date_basis: 'confirmed', subscription_key: 'active', currency: 'PKR', amount_minor: 1_200_000 };
+  const result = subscriptionRows({
+    subscriptions: [{ subscription_key: 'stopped', status: 'canceled' }, { subscription_key: 'active', status: 'active' }],
+    due: [confirmed],
+    timelines: { stopped: [{ kind: 'payment', amount_minor: 200_000 }] },
+  }, { stopped: { estimate }, active: { estimate } });
+  assert.equal(result[0].due, confirmed);
+  assert.equal(result[1].due, null);
+  assert.equal(result[1].lastPayment.amount_minor, 200_000);
+});

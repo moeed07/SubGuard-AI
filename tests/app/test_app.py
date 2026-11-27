@@ -35,6 +35,53 @@ def _test_settings(service_mode: str = "web") -> Settings:
     )
 
 
+def test_demo_optimizer_uses_fixed_catalog_and_gemini_is_opt_in(monkeypatch) -> None:
+    from intelligence import api
+
+    snapshots = []
+
+    async def review(snapshot, goal):
+        snapshots.append(snapshot)
+        assert "lowest monthly cost" in goal
+        return {"status": "complete", "trace": [{"tool": "optimize_subscription_features", "outcome": "ok"}]}
+
+    monkeypatch.setattr(api, "run_review", review)
+    store = LocalStore(":memory:")
+    app = create_app(settings=_test_settings(), store=store, intelligence=_mock_intelligence())
+    client = TestClient(app)
+    assert client.post("/api/optimizer").status_code == 401
+    assert client.post("/demo/start").status_code == 200
+    assert client.post("/api/optimizer").status_code == 403
+    before = client.get("/api/dashboard").json()
+    csrf = {"X-CSRF-Token": before["csrf_token"]}
+    response = client.post("/api/optimizer", headers=csrf, json={"plans": []})
+    assert response.status_code == 200
+    calculation = response.json()
+    assert calculation["agent"] is None and snapshots == []
+    group = calculation["result"]["currencies"]["PKR"]
+    assert group["retained_plan_ids"] == ["A", "C"]
+    assert group["current_monthly_minor"] == 900_000
+    assert group["minimum_monthly_minor"] == group["monthly_reduction_minor"] == 450_000
+
+    live = client.post("/api/optimizer", headers=csrf, json={"run_with_gemini": True}).json()
+    assert live["agent"]["completed"] is True and live["result"] == calculation["result"]
+    assert snapshots[0]["optimizer_plans"] == calculation["plans"]
+    assert snapshots[0]["timelines"] == {} and snapshots[0]["subscriptions"] == []
+    after = client.get("/api/dashboard").json()
+    assert after["portfolio"] == before["portfolio"] and after["review"] == before["review"]
+
+
+def test_optimizer_rejects_nonfictional_sessions() -> None:
+    store = LocalStore(":memory:")
+    app = create_app(settings=_test_settings(), store=store, intelligence=_mock_intelligence())
+    store.upsert_account("acct_live", is_demo=False)
+    security = app.state.security
+    client = TestClient(app)
+    client.cookies.set(security.SESSION_COOKIE_NAME, security.create_session_token("sid_live", account_id="acct_live"))
+    response = client.post("/api/optimizer", headers={"X-CSRF-Token": security.create_csrf_token("sid_live")})
+    assert response.status_code == 403
+
+
 def _mock_intelligence() -> IntelligenceBackend:
     """Test double implementing §2 contract for §3 fixture."""
 
