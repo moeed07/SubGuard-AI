@@ -584,6 +584,50 @@ async def confirm_subscription_source(request: Request, body: dict[str, Any] = B
     return JSONResponse({"ok": True, "is_subscription": is_sub})
 
 
+@router.post("/api/optimize-demo")
+async def optimize_demo_catalog(request: Request) -> Response:
+    """Run the feature-preserving savings optimizer on the fictional plan catalog via Gemini + MCP."""
+    payload, err = _require_auth_and_csrf(request)
+    if err:
+        return err
+
+    store: LocalStore = request.app.state.store
+    account_id = payload["aid"]
+    portfolio = store.get_portfolio(account_id)
+
+    from intelligence.api import build_portfolio, optimize_portfolio, run_review  # type: ignore
+    from intelligence.fictional import AS_OF, TIMEZONE  # type: ignore
+    from intelligence.optimizer_demo import demo_plans  # type: ignore
+
+    plans = demo_plans()
+    base_portfolio = portfolio or build_portfolio([], AS_OF, TIMEZONE)
+    snapshot = dict(base_portfolio, optimizer_plans=plans)
+
+    intel = getattr(request.app.state, "intelligence", None)
+    run_review_fn = intel.run_review if intel is not None else run_review
+    goal = "Which plans would preserve every listed feature at the lowest monthly cost?"
+
+    try:
+        review = await run_review_fn(snapshot, goal)
+    except Exception as exc:
+        review = {
+            "status": "failed",
+            "summary": f"Optimizer agent failed: {exc}",
+            "items": [],
+            "trace": [],
+        }
+
+    optimization = optimize_portfolio(plans)
+    return JSONResponse(
+        {
+            "ok": True,
+            "plans": plans,
+            "optimization": optimization,
+            "review": review,
+        }
+    )
+
+
 @router.post("/api/reminders/deliver")
 async def trigger_deliver_due_reminders(request: Request) -> Response:
     _, err = _require_auth_and_csrf(request)

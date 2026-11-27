@@ -407,9 +407,73 @@ document.getElementById("btn-delete").addEventListener("click", async () => {
   clearAlert();
   try {
     await apiFetch("/api/data", { method: "DELETE" });
+    document.getElementById("optimizer-result").classList.add("hidden");
+    document.getElementById("optimizer-result").innerHTML = "";
     await loadDashboard();
   } catch (err) {
     showAlert(err.message);
+  }
+});
+
+document.getElementById("btn-find-savings").addEventListener("click", async () => {
+  clearAlert();
+  const btn = document.getElementById("btn-find-savings");
+  const box = document.getElementById("optimizer-result");
+  btn.disabled = true;
+  btn.textContent = "Finding savings...";
+  box.classList.remove("hidden");
+  box.innerHTML = '<p class="muted small">Running Gemini + stdio MCP optimizer on the fictional plan catalog...</p>';
+  try {
+    const res = await apiFetch("/api/optimize-demo", { method: "POST" });
+    const opt = res.optimization || {};
+    const currencies = opt.currencies || {};
+    const review = res.review || {};
+    const catalogHtml = (res.plans || [])
+      .map((p) => `<li><strong>Plan ${p.plan_id}</strong>: ${formatMoney(p.currency, p.monthly_cost_minor)}/mo — features: ${(p.features || []).join(", ")}</li>`)
+      .join("");
+    const currencyCards = Object.entries(currencies)
+      .map(([cur, g]) => `
+        <div class="item-row" style="background:#f0fdf4; border-color:#bbf7d0;">
+          <div class="item-head">
+            <strong>Plans to keep (${cur}): ${(g.retained_plan_ids || []).join(", ") || "—"}</strong>
+            <span class="badge badge-ok">Save ${formatMoney(cur, g.monthly_reduction_minor)}/mo</span>
+          </div>
+          <div class="small" style="margin-top:4px;">
+            Monthly cost: <strong>${formatMoney(cur, g.current_monthly_minor)}</strong> → <strong>${formatMoney(cur, g.minimum_monthly_minor)}</strong>
+            · Estimated monthly savings: <strong>${formatMoney(cur, g.monthly_reduction_minor)}</strong>
+          </div>
+          <div class="small muted" style="margin-top:4px;">
+            Preserved features: ${(g.retained_features || []).join(", ") || "—"} · Removable (what-if): ${(g.removal_candidate_ids || []).join(", ") || "None"}
+          </div>
+        </div>
+      `)
+      .join("");
+    const traceHtml = (review.trace || [])
+      .map((tr) => `<li>${tr.tool || "tool"}: ${tr.outcome || "ok"}</li>`)
+      .join("");
+    box.innerHTML = `
+      <details class="trace-box">
+        <summary>Fictional plan catalog (${(res.plans || []).length} plans)</summary>
+        <ul class="list small">${catalogHtml}</ul>
+      </details>
+      ${currencyCards}
+      <div class="item-row">
+        <div class="item-head">
+          <strong>Gemini + MCP Recommendation</strong>
+          <span class="badge ${review.status === "complete" ? "badge-ok" : "badge-warn"}">${review.status || "unknown"}</span>
+        </div>
+        <p class="small" style="margin:6px 0 0 0;">${review.summary || "No agent summary returned."}</p>
+        <details class="trace-box" open>
+          <summary>Optimizer MCP tool trace</summary>
+          <ul class="list small">${traceHtml || "<li>No tool calls recorded</li>"}</ul>
+        </details>
+      </div>
+    `;
+  } catch (err) {
+    box.innerHTML = `<p class="small" style="color:var(--danger);">${err.message}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Find savings";
   }
 });
 
