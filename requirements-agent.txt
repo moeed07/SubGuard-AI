@@ -1,0 +1,6 @@
+google-adk==2.15.1
+google-genai==2.34.0
+mcp==1.30.0
+Babel==2.19.0
+tzdata==2026.6
+pytest==9.2.0

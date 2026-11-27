@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SubGuard AI — Subscription &amp; Billing Review</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <div class="brand">
+        <span class="logo">SubGuard AI</span>
+        <span id="mode-badge" class="badge hidden"></span>
+      </div>
+      <div id="topbar-actions" class="actions hidden">
+        <button id="btn-refresh" class="btn btn-primary" type="button">Refresh</button>
+        <button id="btn-disconnect" class="btn btn-secondary" type="button">Disconnect</button>
+        <button id="btn-delete" class="btn btn-danger" type="button">Delete review data</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <div id="alert-banner" class="alert hidden"></div>
+
+    <section id="connect-view" class="card hero">
+      <h1>See what you're paying for—before the next charge hits.</h1>
+      <p class="disclosure">
+        Read-only billing-email search across the last 13 months. SubGuard AI keeps only extracted subscription events, evidence links, review items, and reminders—never raw email bodies.
+      </p>
+      <div class="cta-row">
+        <a id="btn-connect-gmail" class="btn btn-primary" href="/auth/google/start">Connect Gmail</a>
+        <button id="btn-demo" class="btn btn-secondary" type="button">Explore fictional example</button>
+      </div>
+      <p id="oauth-hint" class="muted small hidden">
+        Google OAuth is not configured on this server yet. You can still explore the fictional example or check <code>/health</code>.
+      </p>
+    </section>
+
+    <section id="dashboard-view" class="hidden">
+      <div class="status-strip card">
+        <div>
+          <strong>Scan status:</strong> <span id="scan-status">—</span>
+          <span id="partial-badge" class="badge badge-warn hidden">Partial scan</span>
+        </div>
+        <div><strong>Last successful scan:</strong> <span id="last-scan">Never</span></div>
+        <div><strong>Timezone:</strong> <span id="tz-label">Asia/Karachi</span></div>
+      </div>
+
+      <section id="notifications-section" class="card hidden">
+        <h2>Notifications</h2>
+        <ul id="notifications-list" class="list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Totals by currency</h2>
+        <div id="totals-grid" class="totals-grid"></div>
+      </section>
+
+      <section class="card">
+        <h2>What needs attention</h2>
+        <p id="review-summary" class="muted"></p>
+        <div id="review-items" class="stack"></div>
+        <details id="trace-details" class="trace-box">
+          <summary>Agent tool trace</summary>
+          <ul id="trace-list" class="list small"></ul>
+        </details>
+      </section>
+
+      <section class="card">
+        <h2>Subscriptions &amp; upcoming charges</h2>
+        <div id="subscriptions-list" class="stack"></div>
+      </section>
+
+      <section class="card">
+        <h2>Evidence sources</h2>
+        <ul id="evidence-list" class="list small"></ul>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
