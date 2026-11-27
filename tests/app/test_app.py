@@ -451,12 +451,14 @@ def test_user_cycle_choice_is_saved_and_estimated() -> None:
 def test_auto_5d_1d_reminders_and_email_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
     sent_emails: list[dict[str, str]] = []
 
-    def _fake_smtp_send(settings, to_email, subscription_key, target_date, reminder_type):
+    def _fake_smtp_send(settings, to_email, subscription_key, target_date, reminder_type, currency=None, amount_minor=None):
         sent_emails.append({
             "to": to_email,
             "sub": subscription_key,
             "date": target_date,
             "type": reminder_type,
+            "currency": currency,
+            "amount_minor": amount_minor,
         })
         return True
 
@@ -511,6 +513,8 @@ def test_auto_5d_1d_reminders_and_email_delivery(monkeypatch: pytest.MonkeyPatch
     assert delivered == 2
     assert len(sent_emails) == 2
     assert sent_emails[0]["to"] == "student@example.com"
+    assert sent_emails[0]["currency"] == "PKR"
+    assert sent_emails[0]["amount_minor"] == 200000
 
     # Custom next_charge_date without cycle also delivers instead of cancelling
     store.set_cycle_choice(acct, "writing-plus", "", next_charge_date=future_date)
@@ -522,8 +526,17 @@ def test_auto_5d_1d_reminders_and_email_delivery(monkeypatch: pytest.MonkeyPatch
     assert len(sent_emails) == 3
 
     from app.mailer import build_reminder_message
-    msg = build_reminder_message("sender@example.com", "student@example.com", "writing-plus", future_date, "five_days")
+    msg = build_reminder_message(
+        "sender@example.com",
+        "student@example.com",
+        "writing-plus",
+        future_date,
+        "five_days",
+        currency="PKR",
+        amount_minor=200000,
+    )
     assert msg["Subject"] == "SubGuard-AI: writing-plus"
+    assert "PKR 2,000" in msg.get_content()
     assert future_date in msg.get_content()
     assert "5 days before renewal" in msg.get_content()
 

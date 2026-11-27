@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager, suppress
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -11,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings, get_settings
 from app.intelligence_adapter import IntelligenceBackend
-from app.routes_api import router as api_router
+from app.routes_api import deliver_due_jobs_with_email, router as api_router
 from app.routes_auth import router as auth_router
 from app.routes_worker import router as worker_router
 from app.security import SecurityManager
@@ -29,7 +32,28 @@ def create_app(
     cfg = settings or get_settings()
     mode = (service_mode or cfg.service_mode or "web").lower()
 
-    app = FastAPI(title="SubGuard AI", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(fastapi_app: FastAPI):
+        bg_task: Optional[asyncio.Task[None]] = None
+        if mode == "web" and os.getenv("ENABLE_BACKGROUND_DELIVERY", "").lower() in ("1", "true"):
+            async def _delivery_loop() -> None:
+                while True:
+                    await asyncio.sleep(60)
+                    try:
+                        deliver_due_jobs_with_email(fastapi_app)
+                    except Exception:
+                        pass
+
+            bg_task = asyncio.create_task(_delivery_loop())
+        try:
+            yield
+        finally:
+            if bg_task is not None:
+                bg_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await bg_task
+
+    app = FastAPI(title="SubGuard AI", version="0.1.0", lifespan=lifespan)
     app.state.settings = cfg
     app.state.security = SecurityManager(cfg.session_secret, cfg.token_encryption_key)
     if store is not None:

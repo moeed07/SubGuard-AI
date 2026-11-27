@@ -116,6 +116,32 @@ def _require_auth_and_csrf(request: Request) -> tuple[Optional[dict[str, Any]], 
     return payload, None
 
 
+def _resolve_job_amount(
+    store: LocalStore,
+    account_id: str,
+    subscription_key: str,
+) -> tuple[Optional[str], Optional[int]]:
+    """Find currency and minor-unit deduction amount for a subscription reminder."""
+    portfolio = store.get_portfolio(account_id)
+    if not portfolio:
+        return None, None
+    for due_item in portfolio.get("due", []):
+        if (
+            due_item.get("subscription_key") == subscription_key
+            and due_item.get("currency")
+            and due_item.get("amount_minor") is not None
+        ):
+            return due_item["currency"], due_item["amount_minor"]
+    user_est = _user_cycle_estimates(store, account_id, portfolio).get(subscription_key, {}).get("estimate")
+    if user_est and user_est.get("currency") and user_est.get("amount_minor") is not None:
+        return user_est["currency"], user_est["amount_minor"]
+    timeline = (portfolio.get("timelines") or {}).get(subscription_key) or []
+    for ev in reversed(timeline):
+        if ev.get("kind") in ("renewal", "trial_conversion", "payment") and ev.get("currency") and ev.get("amount_minor") is not None:
+            return ev["currency"], ev["amount_minor"]
+    return None, None
+
+
 def deliver_due_jobs_with_email(app: Any, now_iso: Optional[str] = None) -> int:
     """Deliver due reminder jobs and send Gmail reminder emails when SMTP is configured."""
     store: LocalStore = app.state.store
@@ -129,12 +155,15 @@ def deliver_due_jobs_with_email(app: Any, now_iso: Optional[str] = None) -> int:
             return
         to_email = security.decrypt_token(acct["encrypted_email"])
         if to_email:
+            currency, amount_minor = _resolve_job_amount(store, job["account_id"], job["subscription_key"])
             ok = send_reminder_email(
                 settings=settings,
                 to_email=to_email,
                 subscription_key=job["subscription_key"],
                 target_date=job["target_date"],
                 reminder_type=job["reminder_type"],
+                currency=currency,
+                amount_minor=amount_minor,
             )
             if ok:
                 print(f"[SubGuard SMTP sent] {job['reminder_type']} reminder sent for {job['subscription_key']}")
