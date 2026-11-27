@@ -119,7 +119,8 @@ async def auth_google_callback(
             client_secret=settings.google_oauth_client_secret,
             redirect_uri=settings.oauth_redirect_uri,
         )
-    except Exception:
+    except Exception as exc:
+        print(f"[SubGuard OAuth error] token exchange failed: {type(exc).__name__}")
         return RedirectResponse(url="/?auth_error=token_exchange_failed", status_code=302)
 
     granted_scopes = (token_data.get("scope") or "").split()
@@ -132,7 +133,8 @@ async def auth_google_callback(
 
     try:
         profile = await fetch_gmail_profile(access_token)
-    except Exception:
+    except Exception as exc:
+        print(f"[SubGuard OAuth error] profile fetch failed: {type(exc).__name__}: {exc}")
         return RedirectResponse(url="/?auth_error=profile_failed", status_code=302)
 
     email = profile.get("emailAddress", "")

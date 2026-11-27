@@ -61,19 +61,26 @@ async def exchange_code_for_token(
     client_secret: str,
     redirect_uri: str,
 ) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
-            GOOGLE_TOKEN_URL,
-            data={
-                "code": code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        for attempt in range(2):
+            try:
+                resp = await client.post(
+                    GOOGLE_TOKEN_URL,
+                    data={
+                        "code": code,
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "redirect_uri": redirect_uri,
+                        "grant_type": "authorization_code",
+                    },
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except Exception:
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(0.5)
+    raise RuntimeError("Token exchange failed")
 
 
 async def revoke_google_token(token: str) -> None:
@@ -85,13 +92,20 @@ async def revoke_google_token(token: str) -> None:
 
 
 async def fetch_gmail_profile(access_token: str) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(
-            f"{GMAIL_API_BASE}/profile",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        resp.raise_for_status()
-        return resp.json()
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        for attempt in range(2):
+            try:
+                resp = await client.get(
+                    f"{GMAIL_API_BASE}/profile",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except Exception:
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(0.5)
+    raise RuntimeError("Profile fetch failed")
 
 
 def _decode_base64url(data: str) -> str:
