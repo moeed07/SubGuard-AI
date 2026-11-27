@@ -1,13 +1,18 @@
 const currencyOptions = new Map();
 const DAY_MS = 86_400_000;
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  'BIF', 'CLP', 'DJF', 'GNF', 'ISK', 'JPY', 'KMF', 'KRW',
+  'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
+]);
+const THREE_DECIMAL_CURRENCIES = new Set(['BHD', 'IQD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND']);
 
 export function money(currency, minor) {
   if (!currency || !Number.isSafeInteger(minor)) return 'Amount unknown';
   if (!currencyOptions.has(currency)) {
-    const options = new Intl.NumberFormat('en-PK', { style: 'currency', currency }).resolvedOptions();
+    const digits = ZERO_DECIMAL_CURRENCIES.has(currency) ? 0 : THREE_DECIMAL_CURRENCIES.has(currency) ? 3 : 2;
     currencyOptions.set(currency, {
-      divisor: 10 ** options.maximumFractionDigits,
-      format: new Intl.NumberFormat('en-PK', { maximumFractionDigits: options.maximumFractionDigits }),
+      divisor: 10 ** digits,
+      format: new Intl.NumberFormat('en-PK', { maximumFractionDigits: digits }),
     });
   }
   const { divisor, format } = currencyOptions.get(currency);

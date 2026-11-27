@@ -65,11 +65,18 @@ function SubscriptionRow({ row, sources, timezone, busy, onChoice, onRemind, rem
           <li key={job.job_id}>{nameOf(job.status)} reminder · {timestamp(job.due_at, timezone)}</li>
         ))}</ul>}
         {row.prompt && <BillingChoice row={row} onChoice={onChoice} busy={busy} />}
-        {!row.prompt && (row.due?.date_basis === 'confirmed'
-          ? <button type="button" className="button button-primary" disabled={busy}
-            onClick={() => onRemind(row.key, 'default')}>Remind me</button>
-          : topSource && <a className="button button-secondary inline-flex items-center" href={`/api/evidence/${encodeURIComponent(topSource)}`}
-            target="_blank" rel="noopener noreferrer">Open source email</a>)}
+        {!row.stopped && row.due?.date && <div className="action-row" style={{ marginTop: '10px', flexWrap: 'wrap' }}>
+          {!row.prompt && row.due?.date_basis === 'confirmed' && (
+            <button type="button" className="button button-primary" disabled={busy} onClick={() => onRemind(row.key, 'default')}>Remind me</button>
+          )}
+          <button type="button" className="button button-secondary" disabled={busy} onClick={() => onRemind(row.key, 'five_days')}>Remind 5d before</button>
+          <button type="button" className="button button-secondary" disabled={busy} onClick={() => onRemind(row.key, 'one_day')}>Remind 1d before</button>
+          <button type="button" className="button button-primary" disabled={busy} onClick={() => onRemind(row.key, 'one_minute')}>Test reminder (1 min)</button>
+        </div>}
+        {!row.prompt && !row.due?.date && topSource && (
+          <a className="button button-secondary inline-flex items-center" href={`/api/evidence/${encodeURIComponent(topSource)}`}
+            target="_blank" rel="noopener noreferrer">Open source email</a>
+        )}
       </div>}
     </li>
   );

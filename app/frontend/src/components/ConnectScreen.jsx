@@ -31,6 +31,7 @@ export default function ConnectScreen({ dashboard, dashboardError }) {
   const [action, setAction] = useState(null);
   const [error, setError] = useState(() => {
     const code = new URLSearchParams(window.location.search).get('auth_error');
+    if (code) window.history.replaceState(null, '', '/');
     return code ? authErrors.get(code) ?? 'Gmail couldn’t be connected. Try again or explore the fictional example.' : '';
   });
 

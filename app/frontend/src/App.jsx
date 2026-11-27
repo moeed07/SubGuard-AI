@@ -86,7 +86,16 @@ export default function App() {
 
   const remind = (subscriptionKey, mode) => mutate('/api/reminders', {
     body: { subscription_key: subscriptionKey, mode }, label: 'Saving reminder…',
-    onSuccess: ({ job }) => { if (job) setNotice({ text: `Reminder saved for ${timestamp(job.due_at, timezone)} (${timezone}).` }); },
+    onSuccess: ({ job }) => {
+      if (job) setNotice({ text: `Reminder saved for ${timestamp(job.due_at, timezone)} (${timezone}).` });
+      if (mode === 'one_minute') {
+        setTimeout(() => {
+          request('/api/reminders/deliver', { method: 'POST', csrf: data.csrf_token })
+            .then(() => load())
+            .catch(() => {});
+        }, 61_000);
+      }
+    },
   });
 
   function leave(deleteData) {
@@ -153,7 +162,12 @@ export default function App() {
         {view === 'subscriptions' && subscriptions(true)}
         {view === 'agent-review' && <div className="review-tools">
           {review(true)}
-          {data.is_demo && <SavingsOptimizer csrf={data.csrf_token} />}
+          <SavingsOptimizer
+            csrf={data.csrf_token}
+            isDemo={Boolean(data.is_demo)}
+            realPlans={data.real_optimizer_plans || []}
+            onSaved={() => load()}
+          />
         </div>}
         {view === 'notifications' && <Notifications records={data.notifications || []} timezone={timezone} />}
       </main>
