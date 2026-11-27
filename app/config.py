@@ -26,8 +26,8 @@ class Settings:
     smtp_port: int = 587
     smtp_email: str = ""
     smtp_app_password: str = ""
-    gmail_max_pages: int = 3
-    gmail_max_messages: int = 40
+    gmail_max_pages: int = 5
+    gmail_max_messages: int = 100
 
     @property
     def smtp_configured(self) -> bool:
