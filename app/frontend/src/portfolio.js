@@ -97,3 +97,18 @@ export function subscriptionRows(portfolio, estimates) {
     return (a.due?.date || '9999').localeCompare(b.due?.date || '9999') || a.key.localeCompare(b.key);
   });
 }
+
+const LOGO_MATCHERS = [
+  ['netflix', /\bnetflix\b/],
+  ['google-ai-pro', /\b(?:google[- ]?(?:ai[- ]?pro|one|pro)|gemini)\b/],
+  ['microsoft', /\bmicrosoft\b/],
+  ['tamasha', /\btamasha\b/],
+  ['chatgpt', /\b(?:chatgpt|openai)\b/],
+  ['spotify', /\bspotify\b/],
+];
+
+export function subscriptionLogoId(subscriptionKey) {
+  const normalized = (subscriptionKey || '').toLowerCase().replace(/[_-]+/g, ' ');
+  const match = LOGO_MATCHERS.find(([, pattern]) => pattern.test(normalized));
+  return match ? match[0] : null;
+}

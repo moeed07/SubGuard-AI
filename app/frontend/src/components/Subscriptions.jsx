@@ -1,8 +1,27 @@
 import React, { useState } from 'react';
 import Evidence from './Evidence.jsx';
+import { logoForSubscription } from '../logos.js';
 import { calendarDate, hasPricedAmount, money, nameOf, timestamp } from '../portfolio.js';
 
 const stoppedNames = { suspended: 'Suspended', canceled: 'Canceled', cancelled: 'Canceled' };
+
+function SubscriptionTile({ subscriptionKey, name }) {
+  const logo = logoForSubscription(subscriptionKey);
+  const [failedSrc, setFailedSrc] = useState(null);
+  const showLogo = Boolean(logo && failedSrc !== logo);
+  return (
+    <span className="initial-tile" aria-hidden="true">
+      {showLogo ? (
+        <img
+          src={logo}
+          alt=""
+          className="initial-tile-logo"
+          onError={() => setFailedSrc(logo)}
+        />
+      ) : name[0]}
+    </span>
+  );
+}
 
 function DateStatus({ row }) {
   if (row.stopped) return <span className="caption">{stoppedNames[row.status] || 'Auto-renewal off'}{row.paid_through && ` · Access through ${calendarDate(row.paid_through)}`}</span>;
@@ -47,7 +66,7 @@ function SubscriptionRow({ row, sources, timezone, busy, onChoice, onRemind, rem
   return (
     <li className="subscription-row">
       <button type="button" className="subscription-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
-        <span className="initial-tile" aria-hidden="true">{name[0]}</span>
+        <SubscriptionTile subscriptionKey={row.key} name={name} />
         <span className="subscription-name"><strong>{name}</strong><span className="caption">{row.cycle ? nameOf(row.cycle) : 'Cadence not stated'}{row.status === 'payment_failed' && ' · Payment failed'}</span></span>
         <span className="subscription-price"><strong className="money">{money(priced?.currency, priced?.amount_minor)}</strong>
           <span className="caption">{date ? (fallbackFromLastPayment ? `Last collected · Next ${date}` : `${row.due.kind === 'trial_conversion' ? 'First charge' : 'Next charge'} · ${date}`) : row.lastPayment ? 'Last collected' : 'No dated charge'}</span>

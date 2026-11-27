@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { confirmedWindow, money, subscriptionRows } from '../src/portfolio.js';
+import { confirmedWindow, money, subscriptionLogoId, subscriptionRows } from '../src/portfolio.js';
 
 test('money uses the currency exponent and visibly separates unknown and zero', () => {
   assert.equal(money('PKR', 1_270_000), 'PKR 12,700');
@@ -50,4 +50,15 @@ test('subscriptionRows and confirmedWindow prefer priced entries over same-date 
   const days = confirmedWindow({ as_of: '2026-11-27', due: [unpriced, priced] });
   assert.equal(days[4].length, 1);
   assert.equal(days[4][0].amount_minor, 80_000);
+});
+
+test('subscriptionLogoId resolves uploaded brand logos and returns null for unknown plans', () => {
+  assert.equal(subscriptionLogoId('netflix-standard'), 'netflix');
+  assert.equal(subscriptionLogoId('google-ai-pro'), 'google-ai-pro');
+  assert.equal(subscriptionLogoId('microsoft-365-personal'), 'microsoft');
+  assert.equal(subscriptionLogoId('tamasha'), 'tamasha');
+  assert.equal(subscriptionLogoId('chatgpt-plus'), 'chatgpt');
+  assert.equal(subscriptionLogoId('spotify-premium-individual'), 'spotify');
+  assert.equal(subscriptionLogoId('design-pro'), null);
+  assert.equal(subscriptionLogoId('individual'), null);
 });

@@ -57,7 +57,7 @@
 ## Verified Test Results
 - `.\.venv\Scripts\python.exe -m pip check` → `No broken requirements found.`
 - `.\.venv\Scripts\python.exe -m pytest tests/app tests/intelligence -q` → `72 passed` (`26.75s`)
-- `npm --prefix app/frontend test` → `4 passed` (React/portfolio unit tests; Vite production bundle built into `app/frontend/dist/`)
+- `npm --prefix app/frontend test` → `5 passed` (React/portfolio unit tests; Vite production bundle built into `app/frontend/dist/`)
 - Live MCP optimizer check (`intelligence.optimizer_demo --live`) → `status: complete`, `optimize_subscription_features: ok`, keeps plans `A` and `C` (`PKR 9,000` → `PKR 4,500`).
 
 ## Deployment
