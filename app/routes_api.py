@@ -376,10 +376,13 @@ async def refresh_scan(request: Request, body: Optional[dict[str, Any]] = Body(d
             except Exception:
                 pass
         existing_portfolio = store.get_portfolio(account_id)
+        existing_meta = store.list_plan_metadata(account_id)
+        has_any_features = any(m.get("features") for m in existing_meta.values())
         needs_reprocess = (
             bool((body or {}).get("reprocess", False))
             or store.clear_legacy_events_without_basis(account_id)
             or (existing_portfolio is not None and "billing_prompts" not in existing_portfolio)
+            or (existing_portfolio is not None and bool(existing_portfolio.get("subscriptions")) and not has_any_features)
         )
         if needs_reprocess:
             store.clear_all_events_for_reprocess(account_id)

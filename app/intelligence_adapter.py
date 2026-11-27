@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo
 
+from app.capability_tags import extract_capability_tags
 from app.gmail_client import ScanOutput
 from app.storage import LocalStore
 
@@ -110,6 +111,29 @@ async def process_scan_output(
     saved_portfolio = store.save_portfolio(account_id, scan_version, portfolio)
     if not saved_portfolio:
         return {"scan_version": scan_version, "scan_status": "stale"}
+
+    # Auto-tag capability features from scanned emails without overwriting user-edited features
+    if scan_output.messages:
+        msg_by_source = {m["source_id"]: m for m in scan_output.messages}
+        tags_by_sub: dict[str, set[str]] = {}
+        for sub_key, timeline in (portfolio.get("timelines") or {}).items():
+            for ev in timeline:
+                msg = msg_by_source.get(ev.get("source_id", ""))
+                if msg:
+                    tags = extract_capability_tags(msg.get("subject", ""), msg.get("body_text", ""))
+                    if tags:
+                        tags_by_sub.setdefault(sub_key, set()).update(tags)
+        existing_meta = store.list_plan_metadata(account_id)
+        for sub_key, tags in tags_by_sub.items():
+            prev = existing_meta.get(sub_key)
+            if not prev or not prev.get("features"):
+                store.set_plan_metadata(
+                    account_id,
+                    sub_key,
+                    prev.get("currency") if prev else None,
+                    prev.get("monthly_cost_minor") if prev else None,
+                    sorted(tags),
+                )
 
     # Cancel pending reminders for any subscription that no longer has an active renewal/due charge
     due_keys = {d.get("subscription_key") for d in portfolio.get("due", [])}

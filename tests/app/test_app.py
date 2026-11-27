@@ -702,3 +702,66 @@ def test_real_subscriptions_optimizer_with_metadata() -> None:
     # sketch-trial (700) + design-pro (1000) covers writing+design cheaper than writing-plus (2000) + design-pro (1000)
     assert pkr["retained_plan_ids"] == ["design-pro", "sketch-trial"]
     assert pkr["monthly_reduction_minor"] == 200000
+
+
+@pytest.mark.asyncio
+async def test_auto_capability_tag_extraction_from_emails() -> None:
+    from app.capability_tags import extract_capability_tags
+
+    assert extract_capability_tags(
+        "Google AI Pro monthly receipt",
+        "Your plan includes higher Gemini usage limits, 5 TB of storage for Gmail, Drive, and Photos, and YouTube Music Premium.",
+    ) == ["ai", "music", "storage"]
+    assert extract_capability_tags(
+        "Spotify Premium Individual subscription receipt",
+        "Your plan includes ad-free music, offline downloads, and higher audio quality.",
+    ) == ["music"]
+    assert extract_capability_tags(
+        "ChatGPT Plus monthly receipt",
+        "Your plan includes higher usage limits, file uploads and analysis, and image generation.",
+    ) == ["ai"]
+
+    store = LocalStore(":memory:")
+    acct = "acct_autotag"
+    scan_out = ScanOutput(
+        messages=[
+            {
+                "source_id": "g1",
+                "received_at": "2026-11-02T08:00:00Z",
+                "sender_domain": "google.com",
+                "subject": "Google AI Pro monthly receipt",
+                "body_text": "Google AI Pro monthly subscription. Paid PKR 5,600 today. Your plan includes Gemini AI and YouTube Music and 5 TB of storage.",
+            },
+            {
+                "source_id": "s1",
+                "received_at": "2026-11-27T08:00:00Z",
+                "sender_domain": "spotify.com",
+                "subject": "Spotify Premium Individual monthly receipt",
+                "body_text": "Spotify Premium Individual monthly subscription. Paid PKR 379 today. Your plan includes ad-free music.",
+            },
+        ],
+        evidence_records=[
+            {"source_id": "g1", "gmail_message_id": "gm1", "received_at": "2026-11-02T08:00:00Z", "sender_domain": "google.com", "subject": "Google AI Pro monthly receipt"},
+            {"source_id": "s1", "gmail_message_id": "gm2", "received_at": "2026-11-27T08:00:00Z", "sender_domain": "spotify.com", "subject": "Spotify Premium Individual monthly receipt"},
+        ],
+        partial=False,
+    )
+
+    from intelligence.api import build_portfolio, extract_events, optimize_portfolio
+
+    async def _fake_review(p: dict[str, Any], g: str) -> dict[str, Any]:
+        return {"status": "complete", "summary": "ok", "items": [], "trace": []}
+
+    intel = IntelligenceBackend(extract_events=extract_events, build_portfolio=build_portfolio, run_review=_fake_review)
+    await process_scan_output(store, acct, scan_out, "2026-11-27", "Asia/Karachi", intel)
+
+    meta = store.list_plan_metadata(acct)
+    assert meta["google-ai-pro"]["features"] == ["ai", "music", "storage"]
+    assert meta["spotify-premium-individual"]["features"] == ["music"]
+
+    from app.routes_api import _build_real_optimizer_plans
+    plans = _build_real_optimizer_plans(store, acct, store.get_portfolio(acct))
+    opt = optimize_portfolio(plans)
+    assert opt["currencies"]["PKR"]["retained_plan_ids"] == ["google-ai-pro"]
+    assert opt["currencies"]["PKR"]["removal_candidate_ids"] == ["spotify-premium-individual"]
+    assert opt["currencies"]["PKR"]["monthly_reduction_minor"] == 37900
