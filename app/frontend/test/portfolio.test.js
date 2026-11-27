@@ -36,3 +36,18 @@ test('a saved estimate cannot revive a canceled renewal or replace a confirmed c
   assert.equal(result[1].due, null);
   assert.equal(result[1].lastPayment.amount_minor, 200_000);
 });
+
+test('subscriptionRows and confirmedWindow prefer priced entries over same-date null-amount notices', () => {
+  const unpriced = { date: '2026-12-01', date_basis: 'confirmed', subscription_key: 'netflix-standard', currency: null, amount_minor: null, evidence_ids: ['src_null'] };
+  const priced = { date: '2026-12-01', date_basis: 'confirmed', subscription_key: 'netflix-standard', currency: 'PKR', amount_minor: 80_000, evidence_ids: ['src_pkr'] };
+  const rows = subscriptionRows({
+    subscriptions: [{ subscription_key: 'netflix-standard', status: 'active', evidence_ids: ['src_pkr'] }],
+    due: [unpriced, priced],
+    timelines: { 'netflix-standard': [] },
+  }, {});
+  assert.equal(rows[0].due.amount_minor, 80_000);
+  assert.equal(rows[0].due.currency, 'PKR');
+  const days = confirmedWindow({ as_of: '2026-11-27', due: [unpriced, priced] });
+  assert.equal(days[4].length, 1);
+  assert.equal(days[4][0].amount_minor, 80_000);
+});

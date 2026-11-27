@@ -40,14 +40,28 @@ export function timestamp(value, timezone = 'Asia/Karachi', dateOnly = false) {
   }).format(parsed);
 }
 
+export const hasPricedAmount = (entry) => Boolean(entry?.currency && Number.isSafeInteger(entry?.amount_minor));
+
 export function confirmedWindow(portfolio) {
   const start = Date.parse(portfolio?.as_of || '');
   const days = Array.from({ length: 8 }, () => []);
   if (!Number.isFinite(start)) return days;
+  const bySlot = new Map();
   for (const due of portfolio.due || []) {
     if (due.date_basis !== 'confirmed' || !due.date) continue;
     const offset = (Date.parse(due.date) - start) / DAY_MS;
-    if (Number.isInteger(offset) && offset >= 0 && offset < days.length) days[offset].push(due);
+    if (!Number.isInteger(offset) || offset < 0 || offset >= days.length) continue;
+    if (!due.subscription_key) {
+      days[offset].push(due);
+      continue;
+    }
+    const slotKey = `${due.subscription_key}:${due.date}`;
+    const prev = bySlot.get(slotKey);
+    if (!prev || (!hasPricedAmount(prev) && hasPricedAmount(due))) bySlot.set(slotKey, due);
+  }
+  for (const due of bySlot.values()) {
+    const offset = (Date.parse(due.date) - start) / DAY_MS;
+    days[offset].push(due);
   }
   return days;
 }
@@ -62,11 +76,16 @@ export function subscriptionRows(portfolio, estimates) {
   return (portfolio.subscriptions || []).map((subscription) => {
     const key = subscription.subscription_key;
     const timeline = portfolio.timelines?.[key] || [];
-    const upcoming = (dueByKey.get(key) || []).toSorted((a, b) => a.date.localeCompare(b.date));
+    const upcoming = (dueByKey.get(key) || []).toSorted((a, b) => (
+      a.date.localeCompare(b.date)
+      || (hasPricedAmount(b) - hasPricedAmount(a))
+      || ((b.date_basis === 'confirmed') - (a.date_basis === 'confirmed'))
+    ));
     const choice = estimates[key];
     const stopped = subscription.auto_renew === false || ['canceled', 'cancelled', 'suspended'].includes(subscription.status);
     const due = stopped ? null : upcoming[0] || choice?.estimate || null;
-    const lastPayment = timeline.findLast((event) => event.kind === 'payment');
+    const lastPayment = timeline.findLast((event) => event.kind === 'payment' && hasPricedAmount(event))
+      || timeline.findLast((event) => event.kind === 'payment');
     const cycle = timeline.findLast((event) => event.cycle)?.cycle || choice?.cycle;
     const evidence = [...new Set([...(due?.evidence_ids || []), ...(subscription.evidence_ids || [])])];
     return { ...subscription, key, timeline, due, upcoming, cycle, lastPayment, choice, stopped, evidence,

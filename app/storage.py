@@ -378,6 +378,28 @@ class LocalStore:
             self._conn.execute("DELETE FROM events WHERE account_id = ?", (account_id,))
             self._conn.commit()
 
+    def purge_self_reminder_evidence(self, account_id: str) -> bool:
+        """Remove previously ingested SubGuard-AI reminder emails so they do not override merchant charges."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT source_id FROM evidence WHERE account_id = ? AND lower(trim(subject)) LIKE 'subguard-ai:%'",
+                (account_id,),
+            ).fetchall()
+            if not rows:
+                return False
+            for r in rows:
+                sid = r["source_id"]
+                self._conn.execute(
+                    "DELETE FROM events WHERE account_id = ? AND source_id = ?",
+                    (account_id, sid),
+                )
+                self._conn.execute(
+                    "DELETE FROM evidence WHERE account_id = ? AND source_id = ?",
+                    (account_id, sid),
+                )
+            self._conn.commit()
+            return True
+
     def clear_legacy_events_without_basis(self, account_id: str) -> bool:
         """If the account has pre-migration events without subscription_basis, clear them so Gmail rescans."""
         with self._lock:

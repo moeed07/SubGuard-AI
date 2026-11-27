@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import Evidence from './Evidence.jsx';
-import { calendarDate, money, nameOf, timestamp } from '../portfolio.js';
+import { calendarDate, hasPricedAmount, money, nameOf, timestamp } from '../portfolio.js';
 
 const stoppedNames = { suspended: 'Suspended', canceled: 'Canceled', cancelled: 'Canceled' };
 
@@ -37,8 +37,11 @@ function BillingChoice({ row, onChoice, busy }) {
 function SubscriptionRow({ row, sources, timezone, busy, onChoice, onRemind, reminders }) {
   const [expanded, setExpanded] = useState(false);
   const name = nameOf(row.key);
-  const priced = row.due || row.lastPayment;
+  const dueHasAmount = hasPricedAmount(row.due);
+  const upcomingEntries = row.stopped ? [] : (row.upcoming || []);
+  const priced = [row.due, ...upcomingEntries, row.lastPayment].find(hasPricedAmount) || row.due || row.lastPayment;
   const date = ['estimated', 'confirmed'].includes(row.due?.date_basis) ? calendarDate(row.due.date) : null;
+  const fallbackFromLastPayment = Boolean(date && !dueHasAmount && priced === row.lastPayment && hasPricedAmount(priced));
   const topSource = row.evidence.find((id) => sources.has(id));
   const payments = row.timeline.filter((event) => event.kind === 'payment').toReversed();
   return (
@@ -47,7 +50,7 @@ function SubscriptionRow({ row, sources, timezone, busy, onChoice, onRemind, rem
         <span className="initial-tile" aria-hidden="true">{name[0]}</span>
         <span className="subscription-name"><strong>{name}</strong><span className="caption">{row.cycle ? nameOf(row.cycle) : 'Cadence not stated'}{row.status === 'payment_failed' && ' · Payment failed'}</span></span>
         <span className="subscription-price"><strong className="money">{money(priced?.currency, priced?.amount_minor)}</strong>
-          <span className="caption">{date ? `${row.due.kind === 'trial_conversion' ? 'First charge' : 'Next charge'} · ${date}` : row.lastPayment ? 'Last collected' : 'No dated charge'}</span>
+          <span className="caption">{date ? (fallbackFromLastPayment ? `Last collected · Next ${date}` : `${row.due.kind === 'trial_conversion' ? 'First charge' : 'Next charge'} · ${date}`) : row.lastPayment ? 'Last collected' : 'No dated charge'}</span>
         </span>
         <span className="row-chevron" aria-hidden="true">{expanded ? '−' : '+'}</span>
       </button>

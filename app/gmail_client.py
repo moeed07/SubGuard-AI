@@ -22,7 +22,7 @@ GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 DEFAULT_GMAIL_QUERY = (
-    'newer_than:13m -category:promotions -category:social '
+    'newer_than:13m -category:promotions -category:social -"SubGuard-AI" '
     '{receipt invoice renewal trial subscription payment cancellation "auto-renew"}'
 )
 
@@ -255,6 +255,8 @@ async def scan_gmail_messages(
                 payload = msg_data.get("payload", {})
                 hdrs = _parse_header_map(payload.get("headers", []))
                 subject = hdrs.get("subject", "(No subject)")
+                if subject.strip().lower().startswith("subguard-ai:"):
+                    continue
                 sender_domain = _extract_sender_domain(hdrs.get("from", ""))
                 received_at = _parse_received_at(hdrs, msg_data.get("internalDate"))
                 body_text = sanitize_body_text(_extract_body_from_payload(payload))

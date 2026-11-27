@@ -140,6 +140,21 @@ class FirestoreStore:
         for doc in self._acct_ref(account_id).collection("events").stream():
             doc.reference.delete()
 
+    def purge_self_reminder_evidence(self, account_id: str) -> bool:
+        ev_col = self._acct_ref(account_id).collection("evidence")
+        events_col = self._acct_ref(account_id).collection("events")
+        removed = False
+        for doc in ev_col.stream():
+            data = doc.to_dict() or {}
+            subj = (data.get("subject") or "").strip().lower()
+            if subj.startswith("subguard-ai:"):
+                sid = data.get("source_id") or doc.id
+                for ev_doc in events_col.where("source_id", "==", sid).stream():
+                    ev_doc.reference.delete()
+                doc.reference.delete()
+                removed = True
+        return removed
+
     def clear_legacy_events_without_basis(self, account_id: str) -> bool:
         return False
 

@@ -415,6 +415,7 @@ async def refresh_scan(request: Request, body: Optional[dict[str, Any]] = Body(d
                     store.upsert_account(account_id, encrypted_email=security.encrypt_token(email))
             except Exception:
                 pass
+        store.purge_self_reminder_evidence(account_id)
         existing_portfolio = store.get_portfolio(account_id)
         existing_meta = store.list_plan_metadata(account_id)
         has_any_features = any(m.get("features") for m in existing_meta.values())
