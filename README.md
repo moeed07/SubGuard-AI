@@ -39,8 +39,19 @@
 | `SESSION_SECRET` | Secret key for signing `HttpOnly` session cookies and CSRF tokens |
 | `TOKEN_ENCRYPTION_KEY` | Fernet key (or passphrase) for encrypting persisted OAuth tokens |
 | `SERVICE_MODE` | `web` (public UI/API) or `worker` (private `/jobs/deliver` endpoint) |
-| `GEMINI_MODEL` | Gemini model name (e.g., `gemini-2.5-flash`) |
+| `GEMINI_MODEL` | Gemini model name (e.g., `gemini-3.5-flash-lite`) |
 | `GOOGLE_API_KEY` | Gemini API key (used by `intelligence` if using AI Studio) |
+| `SMTP_EMAIL` | Optional sender Gmail address for automated email reminders |
+| `SMTP_APP_PASSWORD` | Optional Gmail App Password for `SMTP_EMAIL` |
+
+## Demo Access & Limitations
+- **Reviewer Demo (No Login Required):** Click **Explore fictional example** on the homepage to run the shared §3 fixture through the real billing math and Gemini + stdio MCP review agent.
+- **Live Gmail Testing:** Uses Google OAuth in **Testing** mode with read-only scope (`https://www.googleapis.com/auth/gmail.readonly`). Only email addresses listed under Google Auth Platform → Test users can connect live Gmail.
+- **Scan & Delivery Limits:** Each scan/refresh fetches up to 100 unseen billing emails across the last 13 months and skips already-saved messages. Automated 5-day and 1-day email reminders use SMTP when `SMTP_EMAIL` and `SMTP_APP_PASSWORD` are configured; in-app notifications always persist in SQLite/Firestore.
+
+## Verified Test Results
+- `.\.venv\Scripts\python.exe -m pip check` → `No broken requirements found.`
+- `.\.venv\Scripts\python.exe -m pytest tests/app tests/intelligence -q` → `59 passed` (`23.09s`)
 
 ## Deployment
 See [deploy/README.md](deploy/README.md) for Cloud Run (`subguard-web` and `subguard-worker`), Secret Manager, Firestore, and Cloud Scheduler OIDC setup.

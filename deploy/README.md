@@ -27,7 +27,7 @@ gcloud run deploy subguard-web \
 After deployment, copy the `https://...` URL, set `APP_BASE_URL` on `subguard-web` to that URL, and register `https://YOUR_DEPLOYED_HOST/auth/google/callback` in **Google Auth Platform → Clients**.
 
 ## 3. Secrets in Secret Manager
-Store `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY`, and `GOOGLE_API_KEY` in **Secret Manager** and bind them as environment variables on `subguard-web` (and `SESSION_SECRET` / `TOKEN_ENCRYPTION_KEY` if needed on `subguard-worker`).
+Store `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY`, `GOOGLE_API_KEY`, and optionally `SMTP_EMAIL` + `SMTP_APP_PASSWORD` (for Gmail SMTP reminder emails) in **Secret Manager** and bind them as environment variables on `subguard-web` (and bind `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY`, `SMTP_EMAIL`, `SMTP_APP_PASSWORD` on `subguard-worker`).
 
 ## 4. Deploy the Private Worker Service (`subguard-worker`)
 ```bash
