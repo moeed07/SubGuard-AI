@@ -5,6 +5,8 @@ from __future__ import annotations
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from fractions import Fraction
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -212,6 +214,7 @@ async def get_dashboard(request: Request) -> Response:
         for e in store.list_evidence(account_id)
     ]
     user_estimates = _user_cycle_estimates(store, account_id, portfolio)
+    real_optimizer_plans = _build_real_optimizer_plans(store, account_id, portfolio)
 
     return JSONResponse(
         {
@@ -232,8 +235,67 @@ async def get_dashboard(request: Request) -> Response:
             "notifications": notifications,
             "evidence": evidence,
             "user_estimates": user_estimates,
+            "real_optimizer_plans": real_optimizer_plans,
         }
     )
+
+
+def _round_monthly_minor(amount_minor: int, cycle: Optional[str]) -> Optional[int]:
+    if cycle == "monthly":
+        return amount_minor
+    if cycle == "annual":
+        return int(Fraction(amount_minor, 12) + Fraction(1, 2))
+    return None
+
+
+def _build_real_optimizer_plans(
+    store: LocalStore,
+    account_id: str,
+    portfolio: Optional[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build optimizer_plans from the user's real subscriptions plus saved feature/price metadata."""
+    if not portfolio:
+        return []
+    saved_meta = store.list_plan_metadata(account_id)
+    cycle_choices = store.list_cycle_choices(account_id)
+    timelines = portfolio.get("timelines") or {}
+    plans: list[dict[str, Any]] = []
+    for sub in portfolio.get("subscriptions", []):
+        if sub.get("auto_renew") is False or sub.get("status") in ("canceled", "cancelled", "suspended"):
+            continue
+        key = sub.get("subscription_key", "")
+        if not key:
+            continue
+        tl = timelines.get(key) or []
+        detected_currency: Optional[str] = None
+        detected_monthly: Optional[int] = None
+        chosen_cycle = cycle_choices.get(key)
+        for ev in reversed(tl):
+            if ev.get("kind") in ("payment", "renewal") and ev.get("currency") and ev.get("amount_minor") is not None:
+                detected_currency = ev["currency"]
+                eff_cycle = ev.get("cycle") or chosen_cycle
+                detected_monthly = _round_monthly_minor(int(ev["amount_minor"]), eff_cycle)
+                break
+        if detected_currency is None:
+            for ev in reversed(tl):
+                if ev.get("currency"):
+                    detected_currency = ev["currency"]
+                    break
+        meta = saved_meta.get(key, {})
+        currency = meta.get("currency") or detected_currency
+        monthly_cost_minor = meta.get("monthly_cost_minor")
+        if monthly_cost_minor is None:
+            monthly_cost_minor = detected_monthly
+        features = meta.get("features")
+        plans.append(
+            {
+                "plan_id": key,
+                "currency": currency,
+                "monthly_cost_minor": monthly_cost_minor,
+                "features": features,
+            }
+        )
+    return plans
 
 
 def _user_cycle_estimates(
@@ -582,6 +644,104 @@ async def confirm_subscription_source(request: Request, body: dict[str, Any] = B
                     store, account_id, due_item["subscription_key"], due_item["date"], DEMO_TIMEZONE
                 )
     return JSONResponse({"ok": True, "is_subscription": is_sub})
+
+
+@router.post("/api/plan-metadata")
+async def save_plan_metadata(request: Request, body: dict[str, Any] = Body(...)) -> Response:
+    """Save user-supplied features and monthly cost for real subscriptions before optimization."""
+    payload, err = _require_auth_and_csrf(request)
+    if err:
+        return err
+
+    store: LocalStore = request.app.state.store
+    account_id = payload["aid"]
+    portfolio = store.get_portfolio(account_id)
+    if not portfolio:
+        return JSONResponse({"detail": "No active portfolio found"}, status_code=400)
+
+    known = {s.get("subscription_key") for s in portfolio.get("subscriptions", [])}
+    rows = body.get("plans") if isinstance(body.get("plans"), list) else [body]
+
+    from babel.numbers import get_currency_precision  # type: ignore
+
+    for row in rows:
+        sub_key = (row.get("subscription_key") or row.get("plan_id") or "").strip()
+        if sub_key not in known:
+            return JSONResponse({"detail": f"Unknown subscription: {sub_key}"}, status_code=404)
+        raw_cur = (row.get("currency") or "").strip().upper() or None
+        if raw_cur is not None and (len(raw_cur) != 3 or not raw_cur.isalpha()):
+            return JSONResponse({"detail": f"Invalid currency for {sub_key}"}, status_code=400)
+
+        raw_cost = row.get("monthly_cost")
+        cost_minor: Optional[int] = None
+        if raw_cost is not None and str(raw_cost).strip() != "":
+            cur_for_scale = raw_cur or "PKR"
+            precision = get_currency_precision(cur_for_scale)
+            try:
+                dec = Decimal(str(raw_cost).strip().replace(",", ""))
+            except InvalidOperation:
+                return JSONResponse({"detail": f"Invalid monthly cost for {sub_key}"}, status_code=400)
+            if dec < 0:
+                return JSONResponse({"detail": f"Monthly cost cannot be negative for {sub_key}"}, status_code=400)
+            cost_minor = int((dec * (Decimal(10) ** precision)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+        raw_feats = row.get("features")
+        features: Optional[list[str]] = None
+        if isinstance(raw_feats, str):
+            parsed = [f.strip().lower() for f in raw_feats.split(",") if f.strip()]
+            features = parsed if parsed else None
+        elif isinstance(raw_feats, list):
+            parsed = [str(f).strip().lower() for f in raw_feats if str(f).strip()]
+            features = parsed if parsed else None
+
+        store.set_plan_metadata(account_id, sub_key, raw_cur, cost_minor, features)
+
+    return JSONResponse({"ok": True, "real_optimizer_plans": _build_real_optimizer_plans(store, account_id, portfolio)})
+
+
+@router.post("/api/optimize-real")
+async def optimize_real_subscriptions(request: Request) -> Response:
+    """Run the feature-preserving savings optimizer on the user's real active subscriptions."""
+    payload, err = _require_auth_and_csrf(request)
+    if err:
+        return err
+
+    store: LocalStore = request.app.state.store
+    account_id = payload["aid"]
+    portfolio = store.get_portfolio(account_id)
+    if not portfolio:
+        return JSONResponse({"detail": "No active portfolio found"}, status_code=400)
+
+    from intelligence.api import optimize_portfolio, run_review  # type: ignore
+
+    plans = _build_real_optimizer_plans(store, account_id, portfolio)
+    if not plans:
+        return JSONResponse({"detail": "No active subscriptions found to optimize."}, status_code=400)
+
+    snapshot = dict(portfolio, optimizer_plans=plans)
+    intel = getattr(request.app.state, "intelligence", None)
+    run_review_fn = intel.run_review if intel is not None else run_review
+    goal = "Which plans would preserve every listed feature at the lowest monthly cost?"
+
+    try:
+        review = await run_review_fn(snapshot, goal)
+    except Exception as exc:
+        review = {
+            "status": "failed",
+            "summary": f"Optimizer agent failed: {exc}",
+            "items": [],
+            "trace": [],
+        }
+
+    optimization = optimize_portfolio(plans)
+    return JSONResponse(
+        {
+            "ok": True,
+            "plans": plans,
+            "optimization": optimization,
+            "review": review,
+        }
+    )
 
 
 @router.post("/api/optimize-demo")

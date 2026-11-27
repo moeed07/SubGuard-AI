@@ -70,12 +70,16 @@
 
       <section class="card">
         <div class="item-head">
-          <h2 style="margin:0;">Feature overlap &amp; savings optimizer <span class="badge">Fictional catalog</span></h2>
-          <button id="btn-find-savings" class="btn btn-primary" type="button">Find savings</button>
+          <h2 style="margin:0;">Feature overlap &amp; savings optimizer</h2>
+          <div class="actions">
+            <button id="btn-find-real-savings" class="btn btn-primary" type="button">Optimize my subscriptions</button>
+            <button id="btn-find-savings" class="btn btn-secondary" type="button">Try fictional catalog (demo)</button>
+          </div>
         </div>
         <p class="muted small" style="margin-top:8px;">
-          Runs the real Gemini + MCP optimizer on the fictional 4-plan catalog (Plans A, B, C, D) to find the cheapest set of plans that preserves every feature.
+          Tag features (for example <code>coding, writing, design, storage</code>) and monthly cost on your real subscriptions below, then click <strong>Optimize my subscriptions</strong> to run Gemini + MCP on your actual plans—or try the fictional 4-plan demo.
         </p>
+        <div id="real-optimizer-inputs" class="stack" style="margin-bottom:10px;"></div>
         <div id="optimizer-result" class="stack hidden"></div>
       </section>
 

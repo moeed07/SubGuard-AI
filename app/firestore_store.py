@@ -378,9 +378,39 @@ class FirestoreStore:
             for d in docs
         }
 
+    def set_plan_metadata(
+        self,
+        account_id: str,
+        subscription_key: str,
+        currency: Optional[str],
+        monthly_cost_minor: Optional[int],
+        features: Optional[list[str]],
+    ) -> None:
+        self._acct_ref(account_id).collection("plan_metadata").document(subscription_key).set(
+            {
+                "subscription_key": subscription_key,
+                "currency": currency,
+                "monthly_cost_minor": monthly_cost_minor,
+                "features": features,
+                "updated_at": _utc_now_iso(),
+            }
+        )
+
+    def list_plan_metadata(self, account_id: str) -> dict[str, dict[str, Any]]:
+        docs = self._acct_ref(account_id).collection("plan_metadata").stream()
+        out: dict[str, dict[str, Any]] = {}
+        for d in docs:
+            data = d.to_dict() or {}
+            out[d.id] = {
+                "currency": data.get("currency"),
+                "monthly_cost_minor": data.get("monthly_cost_minor"),
+                "features": data.get("features"),
+            }
+        return out
+
     def delete_account_data(self, account_id: str) -> None:
         acct = self._acct_ref(account_id)
-        for sub in ("evidence", "events", "meta", "review_items", "notifications", "cycle_choices"):
+        for sub in ("evidence", "events", "meta", "review_items", "notifications", "cycle_choices", "plan_metadata"):
             for doc in acct.collection(sub).stream():
                 doc.reference.delete()
         acct.delete()

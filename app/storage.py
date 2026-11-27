@@ -120,6 +120,15 @@ class LocalStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (account_id, subscription_key)
                 );
+                CREATE TABLE IF NOT EXISTS plan_metadata (
+                    account_id TEXT NOT NULL,
+                    subscription_key TEXT NOT NULL,
+                    currency TEXT,
+                    monthly_cost_minor INTEGER,
+                    features_json TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (account_id, subscription_key)
+                );
                 """
             )
             self._conn.commit()
@@ -724,9 +733,55 @@ class LocalStore:
                 for r in rows
             }
 
+    def set_plan_metadata(
+        self,
+        account_id: str,
+        subscription_key: str,
+        currency: Optional[str],
+        monthly_cost_minor: Optional[int],
+        features: Optional[list[str]],
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO plan_metadata (account_id, subscription_key, currency, monthly_cost_minor, features_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_id, subscription_key) DO UPDATE SET
+                    currency = excluded.currency,
+                    monthly_cost_minor = excluded.monthly_cost_minor,
+                    features_json = excluded.features_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    account_id,
+                    subscription_key,
+                    currency,
+                    monthly_cost_minor,
+                    json.dumps(features) if features is not None else None,
+                    utc_now_iso(),
+                ),
+            )
+            self._conn.commit()
+
+    def list_plan_metadata(self, account_id: str) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT subscription_key, currency, monthly_cost_minor, features_json FROM plan_metadata WHERE account_id = ?",
+                (account_id,),
+            ).fetchall()
+            return {
+                r["subscription_key"]: {
+                    "currency": r["currency"],
+                    "monthly_cost_minor": r["monthly_cost_minor"],
+                    "features": json.loads(r["features_json"]) if r["features_json"] else None,
+                }
+                for r in rows
+            }
+
     def delete_account_data(self, account_id: str) -> None:
         with self._lock:
             for table in (
+                "plan_metadata",
                 "cycle_choices",
                 "notifications",
                 "reminder_jobs",

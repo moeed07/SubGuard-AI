@@ -653,3 +653,52 @@ def test_find_savings_optimizer_endpoint() -> None:
     assert pkr["minimum_monthly_minor"] == 450000
     assert pkr["monthly_reduction_minor"] == 450000
     assert body["review"]["trace"][0]["tool"] == "optimize_subscription_features"
+
+
+def test_real_subscriptions_optimizer_with_metadata() -> None:
+    store = LocalStore(":memory:")
+
+    async def _mock_real_opt(snapshot: dict[str, Any], goal: str) -> dict[str, Any]:
+        plans = snapshot.get("optimizer_plans", [])
+        assert any(p["plan_id"] == "writing-plus" and p["features"] == ["writing"] for p in plans)
+        return {
+            "status": "complete",
+            "summary": "Keep writing-plus and design-pro.",
+            "items": [],
+            "trace": [{"tool": "optimize_subscription_features", "outcome": "ok", "evidence_ids": []}],
+        }
+
+    base = _mock_intelligence()
+    mock_intel = IntelligenceBackend(
+        extract_events=base.extract_events,
+        build_portfolio=base.build_portfolio,
+        run_review=_mock_real_opt,
+    )
+    app = create_app(settings=_test_settings(), store=store, intelligence=mock_intel)
+    client = TestClient(app)
+
+    client.post("/demo/start")
+    dash = client.get("/api/dashboard").json()
+    csrf = dash["csrf_token"]
+    assert len(dash["real_optimizer_plans"]) == 3
+
+    # Save features on active subscriptions (writing-plus: 2000/mo, design-pro: 12000/yr=1000/mo, sketch-trial: 700/mo)
+    meta_resp = client.post(
+        "/api/plan-metadata",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "plans": [
+                {"subscription_key": "writing-plus", "currency": "PKR", "monthly_cost": "2000", "features": "writing"},
+                {"subscription_key": "design-pro", "currency": "PKR", "monthly_cost": "1000", "features": "design"},
+                {"subscription_key": "sketch-trial", "currency": "PKR", "monthly_cost": "700", "features": "writing"},
+            ]
+        },
+    )
+    assert meta_resp.status_code == 200
+
+    opt_real = client.post("/api/optimize-real", headers={"X-CSRF-Token": csrf})
+    assert opt_real.status_code == 200
+    pkr = opt_real.json()["optimization"]["currencies"]["PKR"]
+    # sketch-trial (700) + design-pro (1000) covers writing+design cheaper than writing-plus (2000) + design-pro (1000)
+    assert pkr["retained_plan_ids"] == ["design-pro", "sketch-trial"]
+    assert pkr["monthly_reduction_minor"] == 200000
