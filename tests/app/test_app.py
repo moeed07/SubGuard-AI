@@ -512,6 +512,15 @@ def test_auto_5d_1d_reminders_and_email_delivery(monkeypatch: pytest.MonkeyPatch
     assert len(sent_emails) == 2
     assert sent_emails[0]["to"] == "student@example.com"
 
+    # Custom next_charge_date without cycle also delivers instead of cancelling
+    store.set_cycle_choice(acct, "writing-plus", "", next_charge_date=future_date)
+    portfolio["due"] = []
+    store.save_portfolio(acct, ver, portfolio)
+    store.create_reminder_job(acct, "writing-plus", "one_minute", far_future, future_date)
+    delivered2 = routes_api.deliver_due_jobs_with_email(app, now_iso=far_future)
+    assert delivered2 == 1
+    assert len(sent_emails) == 3
+
 
 def test_subscription_basis_reprocess_and_confirm_endpoint() -> None:
     from intelligence.api import build_portfolio

@@ -48,5 +48,6 @@ def send_reminder_email(
             server.login(settings.smtp_email, settings.smtp_app_password.replace(" ", ""))
             server.send_message(msg)
         return True
-    except Exception:
+    except Exception as exc:
+        print(f"[SubGuard SMTP error] Failed to send reminder email: {type(exc).__name__}: {exc}")
         return False

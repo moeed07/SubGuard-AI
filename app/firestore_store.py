@@ -294,12 +294,19 @@ class FirestoreStore:
                 portfolio and any(d.get("subscription_key") == sub_key and d.get("date") for d in portfolio.get("due", []))
             )
             if not still_due and portfolio:
-                choices = self.list_cycle_choices(account_id)
+                choices = self.list_cycle_choice_details(account_id)
+                choice_info = choices.get(sub_key)
                 sub_entry = next(
                     (s for s in portfolio.get("subscriptions", []) if s.get("subscription_key") == sub_key),
                     None,
                 )
-                if sub_key in choices and sub_entry and sub_entry.get("auto_renew") is not False:
+                if (
+                    choice_info
+                    and (choice_info.get("cycle") or choice_info.get("next_charge_date"))
+                    and sub_entry
+                    and sub_entry.get("auto_renew") is not False
+                    and sub_entry.get("status") not in ("canceled", "cancelled", "suspended")
+                ):
                     still_due = True
             notif_ref = self._acct_ref(account_id).collection("notifications").document(f"notif:{doc.id}")
 
