@@ -30,6 +30,46 @@ router = APIRouter()
 DEMO_AS_OF = "2026-11-26"
 DEMO_TIMEZONE = "Asia/Karachi"
 
+# Separate from the Gmail fixture. These are the fictional plans in Ahmed's optimizer brief (§A5).
+OPTIMIZER_EXAMPLE = (
+    {"plan_id": "A", "currency": "PKR", "monthly_cost_minor": 300_000, "features": ["coding", "writing"]},
+    {"plan_id": "B", "currency": "PKR", "monthly_cost_minor": 200_000, "features": ["writing"]},
+    {"plan_id": "C", "currency": "PKR", "monthly_cost_minor": 150_000, "features": ["design"]},
+    {"plan_id": "D", "currency": "PKR", "monthly_cost_minor": 250_000, "features": ["coding"]},
+)
+
+
+@router.post("/api/optimizer")
+async def run_demo_optimizer(request: Request, body: Optional[dict[str, Any]] = Body(default=None)) -> Response:
+    payload, error = _require_auth_and_csrf(request)
+    if error is not None:
+        return error
+    account = request.app.state.store.get_account(payload["aid"])
+    if not account or not account.get("is_demo"):
+        return JSONResponse({"detail": "Open the fictional example to use the optimizer."}, status_code=403)
+
+    from intelligence.api import build_portfolio, optimize_portfolio, run_review
+
+    result = optimize_portfolio(OPTIMIZER_EXAMPLE)
+    agent = None
+    if (body or {}).get("run_with_gemini") is True:
+        snapshot = build_portfolio([], DEMO_AS_OF, DEMO_TIMEZONE)
+        snapshot["optimizer_plans"] = list(OPTIMIZER_EXAMPLE)
+        try:
+            review = await run_review(snapshot, "Which plans preserve every listed feature at the lowest monthly cost?")
+        except Exception:
+            review = {"status": "failed", "trace": []}
+        trace = [
+            {"tool": call["tool"], "outcome": call["outcome"]}
+            for call in review.get("trace", [])
+        ]
+        completed = review["status"] == "complete" and any(
+            call["tool"] == "optimize_subscription_features" and call["outcome"] == "ok" for call in trace
+        )
+        agent = {"completed": completed, "trace": trace}
+
+    return JSONResponse({"plans": OPTIMIZER_EXAMPLE, "result": result, "agent": agent})
+
 
 def build_demo_fixture(include_m8: bool = False) -> ScanOutput:
     """Fictional §3 fixture for 'Explore fictional example'."""

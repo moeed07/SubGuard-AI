@@ -23,7 +23,12 @@
    ```powershell
    .\.venv\Scripts\python.exe -m pytest -q
    ```
-4. Start the local server:
+4. Build the React frontend with Node.js 22.12+:
+   ```powershell
+   npm.cmd --prefix app/frontend ci
+   npm.cmd --prefix app/frontend run build
+   ```
+5. Start the local server:
    ```powershell
    .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
    ```
